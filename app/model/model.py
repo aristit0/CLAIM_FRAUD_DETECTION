@@ -9,13 +9,11 @@ import pickle
 # Gunakan path absolut untuk Resources
 # ============================================
 
-BASE_PATH = "/home/cdsw/app/model"
+MODEL_FILE = f"model.pkl"
+PREPROCESS_FILE = f"preprocess.pkl"
+META_FILE = f"meta.json"
 
-MODEL_FILE = f"{BASE_PATH}/model.pkl"
-PREPROCESS_FILE = f"{BASE_PATH}/preprocess.pkl"
-META_FILE = f"{BASE_PATH}/meta.json"
-
-print("Loading model & preprocess from /app/model/...")
+print("Loading model & preprocess from /home/cdsw/...")
 
 with open(MODEL_FILE, "rb") as f:
     model = pickle.load(f)
