@@ -143,22 +143,13 @@ print(classification_report(y_test, y_pred))
 # 7. Export model untuk deployment
 # ============================================
 
-EXPORT_DIR = "model_export"
-
-# Hapus folder lama
-if os.path.exists(EXPORT_DIR):
-    shutil.rmtree(EXPORT_DIR)
-
-# Buat struktur folder
-os.makedirs(f"{EXPORT_DIR}/model", exist_ok=True)
-os.makedirs(f"{EXPORT_DIR}/artifacts", exist_ok=True)
 
 # Simpan model
-with open(f"{EXPORT_DIR}/model/model.pkl", "wb") as f:
+with open(f"model.pkl", "wb") as f:
     pickle.dump(model, f)
 
 # Simpan preprocessing
-with open(f"{EXPORT_DIR}/artifacts/preprocess.pkl", "wb") as f:
+with open(f"preprocess.pkl", "wb") as f:
     pickle.dump(
         {
             "numeric_cols": numeric_cols,
@@ -171,7 +162,7 @@ with open(f"{EXPORT_DIR}/artifacts/preprocess.pkl", "wb") as f:
     )
 
 # Simpan metadata
-with open(f"{EXPORT_DIR}/meta.json", "w") as f:
+with open(f"{"meta.json", "w") as f:
     json.dump(
         {
             "description": "Fraud detection model for claims",
