@@ -227,8 +227,9 @@ feature_df = base.select(
     "rule_violation_flag",
     "rule_violation_reason",
     current_timestamp().alias("created_at"),
-    "visit_year",
-    "visit_month"
+
+    col("visit_year").cast("int").alias("visit_year"),
+    col("visit_month").cast("int").alias("visit_month")
 )
 
 print("Final DF ready.")
