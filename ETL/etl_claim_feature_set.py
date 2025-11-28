@@ -204,7 +204,6 @@ base = base.withColumn(
 # ----------------------------------------------------------------------------------
 # 11. FINAL SELECT (URUTAN WAJIB MATCH DDL!)
 # ----------------------------------------------------------------------------------
-
 feature_df = base.select(
     "claim_id",
     "patient_nik",
@@ -213,7 +212,9 @@ feature_df = base.select(
     "patient_dob",
     "patient_age",
     "visit_date",
-    "visit_day",
+    col("visit_year").cast("int").alias("visit_year"),
+    col("visit_month").cast("int").alias("visit_month"),
+    col("visit_day").cast("int").alias("visit_day"),
     "visit_type",
     "doctor_name",
     "department",
@@ -234,10 +235,7 @@ feature_df = base.select(
     "biaya_anomaly_score",
     "rule_violation_flag",
     "rule_violation_reason",
-    current_timestamp().alias("created_at"),
-
-    col("visit_year").cast("int").alias("visit_year"),
-    col("visit_month").cast("int").alias("visit_month")
+    current_timestamp().alias("created_at")
 )
 
 print("Final DF ready.")
@@ -249,9 +247,12 @@ feature_df.createOrReplaceTempView("feature_tmp")
 # 12. WRITE USING SQL (PALING STABIL DI CDP)
 # ----------------------------------------------------------------------------------
 
+
 spark.sql("""
-INSERT OVERWRITE TABLE iceberg_curated.claim_feature_set SELECT * FROM feature_tmp
+INSERT OVERWRITE TABLE iceberg_curated.claim_feature_set
+SELECT * FROM feature_tmp
 """)
+
 
 print("=== ETL COMPLETED SUCCESSFULLY ===")
 spark.stop()
