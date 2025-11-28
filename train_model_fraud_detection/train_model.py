@@ -4,8 +4,7 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 import xgboost as xgb
-import mlflow
-import mlflow.xgboost
+from sklearn.metrics import roc_auc_score, f1_score, classification_report
 import os, json, pickle, shutil
 
 
@@ -28,7 +27,7 @@ print(f"Total rows: {df_spark.count()}")
 
 
 # ============================================
-# 2. Pilih kolom feature & label
+# 2. Select Feature Columns
 # ============================================
 label_col = "rule_violation_flag"
 
@@ -54,16 +53,16 @@ cat_cols = [
 ]
 
 all_cols = numeric_cols + cat_cols + [label_col]
+
 df_spark_sel = df_spark.select(*[col(c) for c in all_cols])
 
-# Convert to pandas
 df = df_spark_sel.dropna(subset=[label_col]).toPandas()
 print(df.head())
 print(df[label_col].value_counts())
 
 
 # ============================================
-# 3. Encode categorical & handle nulls
+# 3. Encode Categorical + Fill NaN
 # ============================================
 encoders = {}
 for c in cat_cols:
@@ -79,6 +78,9 @@ X = df[numeric_cols + cat_cols]
 y = df[label_col].astype(int)
 
 print("Shape:", X.shape, y.shape)
+
+# Simpan feature names
+feature_names = list(X.columns)
 
 
 # ============================================
@@ -96,7 +98,7 @@ print("Test size:", len(X_test))
 
 
 # ============================================
-# 5. Train XGBoost
+# 5. Train XGBoost Model
 # ============================================
 pos_ratio = (y_train == 1).sum() / len(y_train)
 neg_ratio = (y_train == 0).sum() / len(y_train)
@@ -112,7 +114,7 @@ model = xgb.XGBClassifier(
     eval_metric="auc",
     scale_pos_weight=scale_pos_weight,
     n_jobs=4,
-    tree_method="hist",
+    tree_method="hist"
 )
 
 model.fit(
@@ -126,8 +128,6 @@ model.fit(
 # ============================================
 # 6. Evaluate
 # ============================================
-from sklearn.metrics import roc_auc_score, f1_score, classification_report
-
 y_pred_proba = model.predict_proba(X_test)[:, 1]
 y_pred = (y_pred_proba >= 0.5).astype(int)
 
@@ -138,8 +138,9 @@ print("AUC:", auc)
 print("F1 :", f1)
 print(classification_report(y_test, y_pred))
 
+
 # ============================================
-# 7. Export model untuk deployment (FINAL)
+# 7. Export model untuk deployment
 # ============================================
 
 EXPORT_DIR = "model_export"
@@ -156,7 +157,7 @@ os.makedirs(f"{EXPORT_DIR}/artifacts", exist_ok=True)
 with open(f"{EXPORT_DIR}/model/model.pkl", "wb") as f:
     pickle.dump(model, f)
 
-# Simpan preprocess
+# Simpan preprocessing
 with open(f"{EXPORT_DIR}/artifacts/preprocess.pkl", "wb") as f:
     pickle.dump(
         {
