@@ -1,0 +1,74 @@
+{
+  "model": {
+    "name": "fraud_detection_claims_xgb",
+    "version": "1",
+    "stage": "Production",
+    "type": "xgboost",
+    "generated_at": "2025-11-28T13:45:20Z"
+  },
+  "results": [
+    {
+      "claim_id": 1234567,
+      "fraud_score": 0.874215,
+      
+      "suspicious_sections": [
+        "procedures",
+        "drug",
+        "cost_anomaly"
+      ],
+
+      "rule_violations": {
+        "flag": 1,
+        "reason": "Biaya anomali tinggi"
+      },
+
+      "explanation": {
+        "top_contributing_features": [
+          {"feature": "biaya_anomaly_score", "value": 3.15, "impact": "high"},
+          {"feature": "total_claim_amount", "value": 1500000, "impact": "medium"},
+          {"feature": "tindakan_validity_score", "value": 0.3, "impact": "medium"},
+          {"feature": "obat_validity_score", "value": 0.4, "impact": "low"},
+          {"feature": "vitamin_relevance_score", "value": 0.7, "impact": "low"}
+        ]
+      },
+
+      "feature_importance_global": [
+        {"feature": "biaya_anomaly_score", "importance": 0.214},
+        {"feature": "total_claim_amount", "importance": 0.181},
+        {"feature": "tindakan_validity_score", "importance": 0.145},
+        {"feature": "obat_validity_score", "importance": 0.121},
+        {"feature": "total_drug_cost", "importance": 0.097},
+        {"feature": "patient_age", "importance": 0.072},
+        {"feature": "visit_month", "importance": 0.063},
+        {"feature": "visit_type", "importance": 0.045},
+        {"feature": "department", "importance": 0.039},
+        {"feature": "icd10_primary_code", "importance": 0.018}
+      ],
+
+      "raw_features": {
+        "patient_age": 45,
+        "visit_year": 2025,
+        "visit_month": 5,
+        "visit_day": 10,
+        "visit_type": "EMERGENCY",
+        "department": "CARDIOLOGY",
+        "icd10_primary_code": "I21",
+        "total_procedure_cost": 900000,
+        "total_drug_cost": 400000,
+        "total_vitamin_cost": 200000,
+        "total_claim_amount": 1500000,
+        "tindakan_validity_score": 0.3,
+        "obat_validity_score": 0.4,
+        "vitamin_relevance_score": 0.7,
+        "biaya_anomaly_score": 3.15
+      }
+    }
+  ],
+
+  "timing_ms": {
+    "preprocessing": 12,
+    "prediction": 4,
+    "postprocessing": 3,
+    "total": 19
+  }
+}
