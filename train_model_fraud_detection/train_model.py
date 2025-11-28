@@ -6,6 +6,7 @@ from sklearn.preprocessing import LabelEncoder
 import xgboost as xgb
 import mlflow
 import mlflow.xgboost
+import os, json, pickle, shutil
 
 
 # ============================================
@@ -139,59 +140,44 @@ print(classification_report(y_test, y_pred))
 
 
 # ============================================
-# 7. Log ke MLflow (TANPA REGISTRY)
+# 7. Export model untuk deployment
 # ============================================
-mlflow.set_experiment("fraud_detection_claims")
 
-feature_names = list(X.columns)
+EXPORT_DIR = "model_export"
 
-with mlflow.start_run(run_name="xgboost_fraud_detection_v1"):
-    mlflow.log_param("model_type", "xgboost")
-    mlflow.log_param("n_estimators", 300)
-    mlflow.log_param("max_depth", 5)
-    mlflow.log_param("learning_rate", 0.05)
-    mlflow.log_param("scale_pos_weight", scale_pos_weight)
+# hapus folder kalau sudah ada
+if os.path.exists(EXPORT_DIR):
+    shutil.rmtree(EXPORT_DIR)
 
-    mlflow.log_metric("auc", auc)
-    mlflow.log_metric("f1", f1)
+os.makedirs(EXPORT_DIR, exist_ok=True)
 
-    # Simpan preprocessing sebagai artifact
-    import pickle, os, json, tempfile
-    temp_dir = tempfile.mkdtemp()
-    preprocess_path = os.path.join(temp_dir, "preprocess.pkl")
-    meta_path = os.path.join(temp_dir, "meta.json")
+# simpan model
+with open(f"{EXPORT_DIR}/model.pkl", "wb") as f:
+    pickle.dump(model, f)
 
-    with open(preprocess_path, "wb") as f:
-        pickle.dump(
-            {
-                "numeric_cols": numeric_cols,
-                "cat_cols": cat_cols,
-                "encoders": encoders,
-                "feature_names": feature_names,
-                "label_col": label_col,
-            },
-            f,
-        )
-
-    with open(meta_path, "w") as f:
-        json.dump(
-            {
-                "description": "Fraud detection model for claims",
-                "version": "v1",
-            },
-            f,
-            indent=2
-        )
-
-    mlflow.log_artifact(preprocess_path, artifact_path="artifacts")
-    mlflow.log_artifact(meta_path, artifact_path="artifacts")
-
-    # Log model ke MLflow (TANPA REGISTER MODEL)
-    mlflow.xgboost.log_model(
-        model,
-        artifact_path="model"
+# simpan preprocessing
+with open(f"{EXPORT_DIR}/preprocess.pkl", "wb") as f:
+    pickle.dump(
+        {
+            "numeric_cols": numeric_cols,
+            "cat_cols": cat_cols,
+            "encoders": encoders,
+            "feature_names": list(X.columns),
+            "label_col": label_col,
+        },
+        f
     )
 
-    print("Run ID:", mlflow.active_run().info.run_id)
+# metadata
+with open(f"{EXPORT_DIR}/meta.json", "w") as f:
+    json.dump(
+        {
+            "description": "Fraud detection for claim dataset",
+            "algorithm": "XGBoost",
+            "version": "v1"
+        },
+        f,
+        indent=2
+    )
 
-print("=== TRAINING COMPLETED ===")
+print("=== MODEL EXPORTED TO model_export/ ===")
