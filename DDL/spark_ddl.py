@@ -7,7 +7,7 @@ DROP TABLE IF EXISTS iceberg_curated.claim_feature_set
 """)
 
 spark.sql("""
-CREATE TABLE iceberg_curated.claim_feature_set (
+CREATE EXTERNAL TABLE iceberg_curated.claim_feature_set (
     claim_id BIGINT,
     patient_nik STRING,
     patient_name STRING,
