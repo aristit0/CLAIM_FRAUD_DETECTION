@@ -5,16 +5,15 @@ import pandas as pd
 import pickle
 
 # ============================================
-# LOAD MODEL & PREPROCESS (FLAT FILES)
-# CML Model Serving meletakkan semua Resources
-# langsung di: /app/model/
+# FIX: CML Model Serving TIDAK memiliki __file__
+# Gunakan path absolut untuk Resources
 # ============================================
 
-BASE_PATH = os.path.dirname(os.path.abspath(__file__))
+BASE_PATH = "/app/model"
 
-MODEL_FILE = os.path.join(BASE_PATH, "model.pkl")
-PREPROCESS_FILE = os.path.join(BASE_PATH, "preprocess.pkl")
-META_FILE = os.path.join(BASE_PATH, "meta.json")
+MODEL_FILE = f"{BASE_PATH}/model.pkl"
+PREPROCESS_FILE = f"{BASE_PATH}/preprocess.pkl"
+META_FILE = f"{BASE_PATH}/meta.json"
 
 print("Loading model & preprocess from /app/model/...")
 
@@ -40,12 +39,12 @@ print("Model & preprocess loaded successfully.")
 def _build_feature_df(records):
     df = pd.DataFrame.from_records(records)
 
-    # Ensure all model columns exist
+    # Pastikan semua kolom tersedia
     for c in numeric_cols + cat_cols:
         if c not in df.columns:
             df[c] = None
 
-    # Encode categorical
+    # Encode kategorikal
     for c in cat_cols:
         le = encoders[c]
         df[c] = df[c].fillna("__MISSING__").astype(str)
@@ -58,7 +57,7 @@ def _build_feature_df(records):
 
         df[c] = le.transform(df[c])
 
-    # Numeric columns sanitizing
+    # Numeric
     for c in numeric_cols:
         df[c] = df[c].astype(float).fillna(0.0)
 
@@ -87,7 +86,7 @@ def _derive_suspicious_sections(row):
 
 
 # ============================================
-# GLOBAL FEATURE IMPORTANCE (STATIC MODEL INFO)
+# GLOBAL FEATURE IMPORTANCE
 # ============================================
 
 def _build_feature_importance():
@@ -99,7 +98,7 @@ GLOBAL_FEATURE_IMPORTANCE = _build_feature_importance()
 
 
 # ============================================
-# MAIN PREDICT FUNCTION (CML ENTRY POINT)
+# MAIN PREDICT FUNCTION
 # ============================================
 
 def predict(data):
