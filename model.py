@@ -5,16 +5,17 @@ import pandas as pd
 import pickle
 
 # ============================================
-# LOAD LOCAL MODEL & PREPROCESS ARTIFACTS
+# LOAD MODEL & PREPROCESS DARI model_export/
 # ============================================
 
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
+EXPORT_DIR = os.path.join(BASE_PATH, "model_export")
 
-MODEL_FILE = os.path.join(BASE_PATH, "model.pkl")
-PREPROCESS_FILE = os.path.join(BASE_PATH, "preprocess.pkl")
-META_FILE = os.path.join(BASE_PATH, "meta.json")
+MODEL_FILE = os.path.join(EXPORT_DIR, "model", "model.pkl")
+PREPROCESS_FILE = os.path.join(EXPORT_DIR, "artifacts", "preprocess.pkl")
+META_FILE = os.path.join(EXPORT_DIR, "meta.json")
 
-print("Loading model & preprocess from local artifacts...")
+print("Loading model & preprocess from model_export/...")
 
 with open(MODEL_FILE, "rb") as f:
     model = pickle.load(f)
@@ -43,7 +44,7 @@ def _build_feature_df(records):
         if c not in df.columns:
             df[c] = None
 
-    # Kategorikal encoding
+    # Encode kategorikal
     for c in cat_cols:
         le = encoders[c]
         df[c] = df[c].fillna("__MISSING__").astype(str)
@@ -51,13 +52,12 @@ def _build_feature_df(records):
         known = set(le.classes_)
         df[c] = df[c].apply(lambda v: v if v in known else "__MISSING__")
 
-        # extend classes jika missing belum ada
         if "__MISSING__" not in known:
             le.classes_ = np.append(le.classes_, "__MISSING__")
 
         df[c] = le.transform(df[c])
 
-    # Numeric sanitizing
+    # Numeric
     for c in numeric_cols:
         df[c] = df[c].astype(float).fillna(0.0)
 
@@ -66,12 +66,11 @@ def _build_feature_df(records):
 
 
 # ============================================
-# RULE-BASED EXPLANATIONS
+# RULE EXPLANATION
 # ============================================
 
 def _derive_suspicious_sections(row):
     sections = []
-
     try:
         if row.get("tindakan_validity_score", 1) < 0.5:
             sections.append("procedures")
@@ -83,7 +82,6 @@ def _derive_suspicious_sections(row):
             sections.append("cost_anomaly")
     except:
         pass
-
     return sections
 
 
@@ -93,17 +91,14 @@ def _derive_suspicious_sections(row):
 
 def _build_feature_importance():
     imps = model.feature_importances_
-    fi = [
-        {"feature": name, "importance": float(val)}
-        for name, val in zip(feature_names, imps)
-    ]
+    fi = [{"feature": n, "importance": float(v)} for n, v in zip(feature_names, imps)]
     return sorted(fi, key=lambda x: x["importance"], reverse=True)
 
 GLOBAL_FEATURE_IMPORTANCE = _build_feature_importance()
 
 
 # ============================================
-# MAIN PREDICT FUNCTION FOR CML SERVING
+# MAIN PREDICT FUNCTION FOR MODEL SERVING
 # ============================================
 
 def predict(data):
@@ -120,8 +115,8 @@ def predict(data):
 
     for i, rec in enumerate(records):
         row = df_raw.iloc[i]
-        fraud_score = float(proba[i])
 
+        fraud_score = float(proba[i])
         suspicious_sections = _derive_suspicious_sections(row)
 
         rule_flag = int(rec.get("rule_violation_flag", preds[i]))
