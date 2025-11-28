@@ -162,7 +162,7 @@ with open(f"preprocess.pkl", "wb") as f:
     )
 
 # Simpan metadata
-with open(f"{"meta.json", "w") as f:
+with open(f"{"meta.json", "wb") as f:
     json.dump(
         {
             "description": "Fraud detection model for claims",
