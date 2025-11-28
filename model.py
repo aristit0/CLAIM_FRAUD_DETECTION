@@ -100,35 +100,50 @@ GLOBAL_FEATURE_IMPORTANCE = _build_feature_importance()
 # ============================================
 
 def predict(data):
+    # 1. Safe JSON parsing
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except Exception as e:
+            return {"error": f"Invalid JSON: {e}"}
+
+    # 2. Validation
+    if not isinstance(data, dict):
+        return {"error": "Input must be a JSON object (dictionary)."}
+
     records = data.get("records", [])
     if not records:
         return {"error": "No records provided", "results": []}
 
-    df_raw, X = _build_feature_df(records)
+    try:
+        df_raw, X = _build_feature_df(records)
 
-    proba = model.predict_proba(X)[:, 1]
-    preds = (proba >= 0.5).astype(int)
+        proba = model.predict_proba(X)[:, 1]
+        preds = (proba >= 0.5).astype(int)
 
-    results = []
+        results = []
 
-    for i, rec in enumerate(records):
-        row = df_raw.iloc[i]
+        for i, rec in enumerate(records):
+            row = df_raw.iloc[i]
 
-        fraud_score = float(proba[i])
-        suspicious_sections = _derive_suspicious_sections(row)
+            fraud_score = float(proba[i])
+            suspicious_sections = _derive_suspicious_sections(row)
 
-        rule_flag = int(rec.get("rule_violation_flag", preds[i]))
-        rule_reason = rec.get("rule_violation_reason", None)
+            rule_flag = int(rec.get("rule_violation_flag", preds[i]))
+            rule_reason = rec.get("rule_violation_reason", None)
 
-        results.append({
-            "claim_id": rec.get("claim_id"),
-            "fraud_score": fraud_score,
-            "suspicious_sections": suspicious_sections,
-            "rule_violations": {
-                "flag": rule_flag,
-                "reason": rule_reason,
-            },
-            "feature_importance": GLOBAL_FEATURE_IMPORTANCE,
-        })
+            results.append({
+                "claim_id": rec.get("claim_id"),
+                "fraud_score": fraud_score,
+                "suspicious_sections": suspicious_sections,
+                "rule_violations": {
+                    "flag": rule_flag,
+                    "reason": rule_reason,
+                },
+                "feature_importance": GLOBAL_FEATURE_IMPORTANCE,
+            })
 
-    return {"results": results}
+        return {"results": results}
+
+    except Exception as e:
+        return {"error": str(e)}
