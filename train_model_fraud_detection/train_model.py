@@ -181,3 +181,48 @@ with open(f"{EXPORT_DIR}/meta.json", "w") as f:
     )
 
 print("=== MODEL EXPORTED TO model_export/ ===")
+
+
+# ============================================
+# 8. Export model for deployment
+# ============================================
+import shutil
+
+EXPORT_DIR = "model_export"
+
+# delete old export if exists
+if os.path.exists(EXPORT_DIR):
+    shutil.rmtree(EXPORT_DIR)
+
+os.makedirs(EXPORT_DIR, exist_ok=True)
+
+# Save model.pkl
+with open(f"{EXPORT_DIR}/model.pkl", "wb") as f:
+    pickle.dump(model, f)
+
+# Save preprocess.pkl
+with open(f"{EXPORT_DIR}/preprocess.pkl", "wb") as f:
+    pickle.dump(
+        {
+            "numeric_cols": numeric_cols,
+            "cat_cols": cat_cols,
+            "encoders": encoders,
+            "feature_names": feature_names,
+            "label_col": label_col,
+        },
+        f,
+    )
+
+# metadata
+with open(f"{EXPORT_DIR}/meta.json", "w") as f:
+    json.dump(
+        {
+            "description": "Fraud detection model for claims",
+            "algorithm": "XGBoost",
+            "version": "v1",
+        },
+        f,
+        indent=2
+    )
+
+print("=== MODEL EXPORTED TO model_export/ ===")
