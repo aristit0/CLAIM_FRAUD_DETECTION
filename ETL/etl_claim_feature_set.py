@@ -12,13 +12,13 @@ from pyspark.sql.window import Window
 
 spark = (
     SparkSession.builder
-    .appName("claim_feature_set_etl")
-    .config("spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkSessionCatalog")
-    .config("spark.sql.catalog.spark_catalog.type", "hive")
-    .config("spark.serializer", "org.apache.spark.serializer.JavaSerializer")
-    .getOrCreate()
+        .appName("claim_feature_set_etl")
+        .config("spark.sql.catalog.ice", "org.apache.iceberg.spark.SparkCatalog")
+        .config("spark.sql.catalog.ice.type", "hadoop")
+        .config("spark.sql.catalog.ice.warehouse", "hdfs:///warehouse/tablespace/external/hive/")  
+        .config("spark.serializer", "org.apache.spark.serializer.JavaSerializer")
+        .getOrCreate()
 )
-
 print("=== START ETL FEATURE SET ===")
 
 
@@ -205,39 +205,7 @@ base = base.withColumn(
 # ----------------------------------------------------------------------------------
 # 11. FINAL SELECT (URUTAN WAJIB MATCH DDL!)
 # ----------------------------------------------------------------------------------
-feature_df = base.select(
-    "claim_id",
-    "patient_nik",
-    "patient_name",
-    "patient_gender",
-    "patient_dob",
-    "patient_age",
-    "visit_date",
-    col("visit_year").cast("int").alias("visit_year"),
-    col("visit_month").cast("int").alias("visit_month"),
-    col("visit_day").cast("int").alias("visit_day"),
-    "visit_type",
-    "doctor_name",
-    "department",
-    "icd10_primary_code",
-    "icd10_primary_desc",
-    "procedures_icd9_codes",
-    "procedures_icd9_descs",
-    "drug_codes",
-    "drug_names",
-    "vitamin_names",
-    "total_procedure_cost",
-    "total_drug_cost",
-    "total_vitamin_cost",
-    "total_claim_amount",
-    "tindakan_validity_score",
-    "obat_validity_score",
-    "vitamin_relevance_score",
-    "biaya_anomaly_score",
-    "rule_violation_flag",
-    "rule_violation_reason",
-    current_timestamp().alias("created_at")
-)
+feature_df = base.select("*", current_timestamp().alias("created_at"))
 
 print("Final DF ready.")
 
@@ -248,12 +216,7 @@ feature_df.createOrReplaceTempView("feature_tmp")
 # 12. WRITE USING SQL (PALING STABIL DI CDP)
 # ----------------------------------------------------------------------------------
 
-feature_df.writeTo("iceberg_curated.claim_feature_set").overwritePartitions()
-
-spark.sql("""
-INSERT OVERWRITE TABLE iceberg_curated.claim_feature_set
-SELECT * FROM feature_tmp
-""")
+feature_df.writeTo("ice.iceberg_curated.claim_feature_set").overwritePartitions()
 
 print("=== ETL COMPLETED SUCCESSFULLY ===")
 spark.stop()
