@@ -15,9 +15,6 @@ spark = (
     .appName("claim_feature_set_etl")
     .config("spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkSessionCatalog")
     .config("spark.sql.catalog.spark_catalog.type", "hive")
-    .config("spark.sql.catalog.local", "org.apache.iceberg.spark.SparkCatalog")
-    .config("spark.sql.catalog.local.type", "hadoop")
-    .config("spark.sql.catalog.local.warehouse", "hdfs:///warehouse/tablespace/external/hive")
     .getOrCreate()
 )
 
