@@ -13,11 +13,6 @@ spark = (
 
 print("Spark started")
 
-
-# ====================================================================
-#  CREATE ICEBERG TABLE (WITH LOCATION + FORMAT-VERSION = 2)
-# ====================================================================
-
 spark.sql("""
 DROP TABLE IF EXISTS iceberg_curated.claim_feature_set
 """)
@@ -66,10 +61,8 @@ CREATE TABLE iceberg_curated.claim_feature_set (
 )
 USING iceberg
 PARTITIONED BY (visit_year, visit_month)
-TBLPROPERTIES (
-    'format-version' = '2',
-    'location' = 'hdfs:///warehouse/tablespace/external/hive/iceberg_curated.db/claim_feature_set'
-)
+LOCATION 'hdfs:///warehouse/tablespace/external/hive/iceberg_curated.db/claim_feature_set'
+TBLPROPERTIES ('format-version'='2')
 """)
 
-print("Iceberg table 'claim_feature_set' created successfully.")
+print("CREATE TABLE claim_feature_set SUCCESS")
