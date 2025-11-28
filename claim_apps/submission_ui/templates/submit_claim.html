@@ -1,0 +1,55 @@
+{% extends "layout.html" %}
+{% block content %}
+
+<div class="card p-4 shadow-sm">
+    <h4 class="mb-3">Submit Claim</h4>
+
+    {% if msg %}
+    <div class="alert alert-success">{{ msg }}</div>
+    {% endif %}
+
+    <form method="POST">
+
+        <div class="row">
+            <div class="col-md-6 mb-3">
+                <label>Nama Pasien</label>
+                <input class="form-control" name="patient_name" required>
+            </div>
+
+            <div class="col-md-6 mb-3">
+                <label>NIK</label>
+                <input class="form-control" name="patient_nik" required>
+            </div>
+        </div>
+
+        <div class="mb-3">
+            <label>Diagnosis (ICD-10)</label>
+            <input class="form-control" name="diagnosis" required>
+        </div>
+
+        <div class="mb-3">
+            <label>Procedure (ICD-9)</label>
+            <input class="form-control" name="procedure" required>
+        </div>
+
+        <div class="mb-3">
+            <label>Obat (Fornas)</label>
+            <input class="form-control" name="drug" required>
+        </div>
+
+        <div class="mb-3">
+            <label>Vitamin</label>
+            <input class="form-control" name="vitamin">
+        </div>
+
+        <div class="mb-3">
+            <label>Total Biaya</label>
+            <input class="form-control" type="number" name="cost" required>
+        </div>
+
+        <button class="btn btn-primary w-100">Submit Claim</button>
+    </form>
+
+</div>
+
+{% endblock %}
