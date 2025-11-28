@@ -5,12 +5,12 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 import xgboost as xgb
 from sklearn.metrics import roc_auc_score, f1_score, classification_report
-import os, json, pickle, shutil
+import os, json, pickle
 
 
-# ============================================
-# 1. Connect ke Spark via CML
-# ============================================
+# =====================================================
+# 1. Connect to Spark
+# =====================================================
 CONNECTION_NAME = "CDP-MSI"
 conn = cmldata.get_connection(CONNECTION_NAME)
 spark = conn.get_spark_session()
@@ -23,12 +23,12 @@ df_spark = spark.sql("""
 """)
 
 df_spark.printSchema()
-print(f"Total rows: {df_spark.count()}")
+print("Total rows:", df_spark.count())
 
 
-# ============================================
-# 2. Select Feature Columns
-# ============================================
+# =====================================================
+# 2. Select feature columns
+# =====================================================
 label_col = "rule_violation_flag"
 
 numeric_cols = [
@@ -55,37 +55,38 @@ cat_cols = [
 all_cols = numeric_cols + cat_cols + [label_col]
 
 df_spark_sel = df_spark.select(*[col(c) for c in all_cols])
-
 df = df_spark_sel.dropna(subset=[label_col]).toPandas()
+
 print(df.head())
 print(df[label_col].value_counts())
 
 
-# ============================================
+# =====================================================
 # 3. Encode Categorical + Fill NaN
-# ============================================
+# =====================================================
 encoders = {}
+
 for c in cat_cols:
     le = LabelEncoder()
     df[c] = df[c].fillna("__MISSING__").astype(str)
     df[c] = le.fit_transform(df[c])
     encoders[c] = le
 
+# Fill numeric NaN
 for c in numeric_cols:
     df[c] = df[c].fillna(0.0)
 
 X = df[numeric_cols + cat_cols]
 y = df[label_col].astype(int)
 
-print("Shape:", X.shape, y.shape)
-
-# Simpan feature names
 feature_names = list(X.columns)
 
+print("FEATURE MATRIX:", X.shape, " LABELS:", y.shape)
 
-# ============================================
+
+# =====================================================
 # 4. Train-test split
-# ============================================
+# =====================================================
 X_train, X_test, y_train, y_test = train_test_split(
     X, y,
     test_size=0.2,
@@ -93,16 +94,17 @@ X_train, X_test, y_train, y_test = train_test_split(
     stratify=y
 )
 
-print("Train size:", len(X_train))
-print("Test size:", len(X_test))
+print("Train:", len(X_train), "Test:", len(X_test))
 
 
-# ============================================
+# =====================================================
 # 5. Train XGBoost Model
-# ============================================
+# =====================================================
 pos_ratio = (y_train == 1).sum() / len(y_train)
 neg_ratio = (y_train == 0).sum() / len(y_train)
 scale_pos_weight = neg_ratio / pos_ratio if pos_ratio > 0 else 1.0
+
+print("scale_pos_weight =", scale_pos_weight)
 
 model = xgb.XGBClassifier(
     n_estimators=300,
@@ -125,9 +127,9 @@ model.fit(
 )
 
 
-# ============================================
+# =====================================================
 # 6. Evaluate
-# ============================================
+# =====================================================
 y_pred_proba = model.predict_proba(X_test)[:, 1]
 y_pred = (y_pred_proba >= 0.5).astype(int)
 
@@ -139,17 +141,19 @@ print("F1 :", f1)
 print(classification_report(y_test, y_pred))
 
 
-# ============================================
-# 7. Export model untuk deployment
-# ============================================
+# =====================================================
+# 7. Export model to ROOT DIRECTORY
+# =====================================================
+print("\n=== EXPORT ARTIFACTS TO ROOT DIRECTORY ===")
 
+ROOT = "/home/cdsw"
 
-# Simpan model
-with open(f"model.pkl", "wb") as f:
+# model
+with open(os.path.join(ROOT, "model.pkl"), "wb") as f:
     pickle.dump(model, f)
 
-# Simpan preprocessing
-with open(f"preprocess.pkl", "wb") as f:
+# preprocess
+with open(os.path.join(ROOT, "preprocess.pkl"), "wb") as f:
     pickle.dump(
         {
             "numeric_cols": numeric_cols,
@@ -158,11 +162,11 @@ with open(f"preprocess.pkl", "wb") as f:
             "feature_names": feature_names,
             "label_col": label_col,
         },
-        f,
+        f
     )
 
-# Simpan metadata
-with open(f"{"meta.json", "wb") as f:
+# metadata
+with open(os.path.join(ROOT, "meta.json"), "w") as f:
     json.dump(
         {
             "description": "Fraud detection model for claims",
@@ -173,4 +177,4 @@ with open(f"{"meta.json", "wb") as f:
         indent=2
     )
 
-print("=== MODEL EXPORTED SUCCESSFULLY TO model_export/ ===")
+print("=== MODEL + ARTIFACTS SAVED TO /home/cdsw ===")
