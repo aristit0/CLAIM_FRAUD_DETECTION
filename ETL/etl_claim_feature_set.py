@@ -15,6 +15,7 @@ spark = (
     .appName("claim_feature_set_etl")
     .config("spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkSessionCatalog")
     .config("spark.sql.catalog.spark_catalog.type", "hive")
+    .config("spark.serializer", "org.apache.spark.serializer.JavaSerializer")
     .getOrCreate()
 )
 
@@ -247,12 +248,12 @@ feature_df.createOrReplaceTempView("feature_tmp")
 # 12. WRITE USING SQL (PALING STABIL DI CDP)
 # ----------------------------------------------------------------------------------
 
+feature_df.writeTo("iceberg_curated.claim_feature_set").overwritePartitions()
 
 spark.sql("""
 INSERT OVERWRITE TABLE iceberg_curated.claim_feature_set
 SELECT * FROM feature_tmp
 """)
-
 
 print("=== ETL COMPLETED SUCCESSFULLY ===")
 spark.stop()
