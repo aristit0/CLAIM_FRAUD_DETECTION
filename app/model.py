@@ -9,7 +9,7 @@ import pickle
 # ============================================
 
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
-EXPORT_DIR = os.path.join(BASE_PATH, "model_export")
+EXPORT_DIR = os.path.join(BASE_PATH, "model/model_export")
 
 MODEL_FILE = os.path.join(EXPORT_DIR, "model", "model.pkl")
 PREPROCESS_FILE = os.path.join(EXPORT_DIR, "artifacts", "preprocess.pkl")
