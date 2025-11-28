@@ -5,21 +5,27 @@ import pandas as pd
 import pickle
 
 # ============================================
-# FIX: CML Model Serving TIDAK memiliki __file__
-# Gunakan path absolut untuk Resources
+# DEBUG: Check working directory
 # ============================================
+print("DEBUG: CWD =", os.getcwd())
+print("DEBUG: Files in CWD:", os.listdir("."))
 
-MODEL_FILE = f"model.pkl"
-PREPROCESS_FILE = f"preprocess.pkl"
-META_FILE = f"meta.json"
+# ============================================
+# LOAD ARTIFACTS (must be in same folder)
+# ============================================
+MODEL_FILE = "model.pkl"
+PREPROCESS_FILE = "preprocess.pkl"
+META_FILE = "meta.json"
 
-print("Loading model & preprocess from /home/cdsw/...")
-
+print("DEBUG: Loading MODEL_FILE =", MODEL_FILE)
 with open(MODEL_FILE, "rb") as f:
     model = pickle.load(f)
+print("DEBUG: Model loaded OK")
 
+print("DEBUG: Loading PREPROCESS_FILE =", PREPROCESS_FILE)
 with open(PREPROCESS_FILE, "rb") as f:
     preprocess = pickle.load(f)
+print("DEBUG: Preprocess loaded OK")
 
 numeric_cols = preprocess["numeric_cols"]
 cat_cols = preprocess["cat_cols"]
@@ -27,15 +33,13 @@ encoders = preprocess["encoders"]
 feature_names = preprocess["feature_names"]
 label_col = preprocess["label_col"]
 
-print("Model & preprocess loaded successfully.")
+print("DEBUG: Preprocess keys loaded OK")
 
 
 # ============================================
 # BUILD FEATURE DF
 # ============================================
-
 def _build_feature_df(records):
-
     print("DEBUG: Building DF...")
 
     df = pd.DataFrame.from_records(records)
@@ -52,11 +56,10 @@ def _build_feature_df(records):
     for c in cat_cols:
         df[c] = df[c].astype(str).fillna("__MISSING__")
         le = encoders[c]
-
         known = set(le.classes_)
+
         df[c] = df[c].apply(lambda v: v if v in known else "__MISSING__")
 
-        # ensure "__MISSING__" exists
         if "__MISSING__" not in known:
             le.classes_ = np.append(le.classes_, "__MISSING__")
 
@@ -77,9 +80,8 @@ def _build_feature_df(records):
 
 
 # ============================================
-# RULE EXPLANATION
+# RULES
 # ============================================
-
 def _derive_suspicious_sections(row):
     sections = []
     try:
@@ -97,36 +99,37 @@ def _derive_suspicious_sections(row):
 
 
 # ============================================
-# GLOBAL FEATURE IMPORTANCE
+# FEATURE IMPORTANCE
 # ============================================
-
 def _build_feature_importance():
-    imps = model.feature_importances_
-    fi = [{"feature": n, "importance": float(v)} for n, v in zip(feature_names, imps)]
-    return sorted(fi, key=lambda x: x["importance"], reverse=True)
+    try:
+        imps = model.feature_importances_
+        fi = [{"feature": n, "importance": float(v)} for n, v in zip(feature_names, imps)]
+        return sorted(fi, key=lambda x: x["importance"], reverse=True)
+    except:
+        return []
 
 GLOBAL_FEATURE_IMPORTANCE = _build_feature_importance()
 
 
 # ============================================
-# MAIN PREDICT FUNCTION
+# MAIN
 # ============================================
-
 def predict(data):
-    # 1. Safe JSON parsing
+    print("DEBUG: predict() called")
+
     if isinstance(data, str):
         try:
             data = json.loads(data)
-        except Exception as e:
-            return {"error": f"Invalid JSON: {e}"}
+        except:
+            return {"error": "Invalid JSON"}
 
-    # 2. Validation
     if not isinstance(data, dict):
-        return {"error": "Input must be a JSON object (dictionary)."}
+        return {"error": "Input must be dict"}
 
     records = data.get("records", [])
-    if not records:
-        return {"error": "No records provided", "results": []}
+    if not isinstance(records, list) or len(records) == 0:
+        return {"error": "records must be non-empty list"}
 
     try:
         df_raw, X = _build_feature_df(records)
@@ -134,29 +137,23 @@ def predict(data):
         proba = model.predict_proba(X)[:, 1]
         preds = (proba >= 0.5).astype(int)
 
-        results = []
+        outputs = []
 
         for i, rec in enumerate(records):
             row = df_raw.iloc[i]
-
-            fraud_score = float(proba[i])
-            suspicious_sections = _derive_suspicious_sections(row)
-
-            rule_flag = int(rec.get("rule_violation_flag", preds[i]))
-            rule_reason = rec.get("rule_violation_reason", None)
-
-            results.append({
+            outputs.append({
                 "claim_id": rec.get("claim_id"),
-                "fraud_score": fraud_score,
-                "suspicious_sections": suspicious_sections,
+                "fraud_score": float(proba[i]),
+                "suspicious_sections": _derive_suspicious_sections(row),
                 "rule_violations": {
-                    "flag": rule_flag,
-                    "reason": rule_reason,
+                    "flag": int(rec.get("rule_violation_flag", preds[i])),
+                    "reason": rec.get("rule_violation_reason"),
                 },
                 "feature_importance": GLOBAL_FEATURE_IMPORTANCE,
             })
 
-        return {"results": results}
+        return {"results": outputs}
 
     except Exception as e:
+        print("ERROR in predict:", str(e))
         return {"error": str(e)}
