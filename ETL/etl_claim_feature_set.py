@@ -1,60 +1,81 @@
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    col, lit, when, array, collect_list, first, year, month, dayofmonth,
-    avg, stddev_pop, abs as spark_abs, current_timestamp, countDistinct
+    col, lit, when, collect_list, first, year, month, dayofmonth,
+    avg, stddev_pop, abs as spark_abs, current_timestamp, size
 )
 from pyspark.sql.window import Window
 
+# ----------------------------------------------------------------------------------
+# SPARK SESSION
+# ----------------------------------------------------------------------------------
+
 spark = SparkSession.builder.appName("claim_feature_set_etl").getOrCreate()
 
-# 1. Baca tabel raw dari Iceberg
-hdr = spark.table("iceberg_raw.claim_header_raw")
+print("=== START ETL FEATURE SET ===")
+
+# ----------------------------------------------------------------------------------
+# 1. LOAD RAW ICEBERG TABLES
+# ----------------------------------------------------------------------------------
+
+hdr  = spark.table("iceberg_raw.claim_header_raw")
 diag = spark.table("iceberg_raw.claim_diagnosis_raw")
 proc = spark.table("iceberg_raw.claim_procedure_raw")
 drug = spark.table("iceberg_raw.claim_drug_raw")
-vit = spark.table("iceberg_raw.claim_vitamin_raw")
+vit  = spark.table("iceberg_raw.claim_vitamin_raw")
 
-# 2. Ambil diagnosis utama per claim
+print("Loaded raw tables.")
+
+
+# ----------------------------------------------------------------------------------
+# 2. PRIMARY DIAGNOSIS PER CLAIM
+# ----------------------------------------------------------------------------------
+
 diag_primary = (
-    diag
-    .where(col("is_primary") == 1)
-    .groupBy("claim_id")
-    .agg(
-        first("icd10_code").alias("icd10_primary_code"),
-        first("icd10_description").alias("icd10_primary_desc")
-    )
+    diag.where(col("is_primary") == 1)
+        .groupBy("claim_id")
+        .agg(
+            first("icd10_code").alias("icd10_primary_code"),
+            first("icd10_description").alias("icd10_primary_desc")
+        )
 )
 
-# 3. Agregasi procedure per claim
+print("Diagnosis primary aggregated.")
+
+
+# ----------------------------------------------------------------------------------
+# 3. AGGREGATE PROCEDURE, DRUG, VITAMIN
+# ----------------------------------------------------------------------------------
+
 proc_agg = (
-    proc
-    .groupBy("claim_id")
-    .agg(
-        collect_list("icd9_code").alias("procedures_icd9_codes"),
-        collect_list("icd9_description").alias("procedures_icd9_descs")
-    )
+    proc.groupBy("claim_id")
+        .agg(
+            collect_list("icd9_code").alias("procedures_icd9_codes"),
+            collect_list("icd9_description").alias("procedures_icd9_descs")
+        )
 )
 
-# 4. Agregasi drug per claim
 drug_agg = (
-    drug
-    .groupBy("claim_id")
-    .agg(
-        collect_list("drug_code").alias("drug_codes"),
-        collect_list("drug_name").alias("drug_names")
-    )
+    drug.groupBy("claim_id")
+        .agg(
+            collect_list("drug_code").alias("drug_codes"),
+            collect_list("drug_name").alias("drug_names")
+        )
 )
 
-# 5. Agregasi vitamin per claim
 vit_agg = (
-    vit
-    .groupBy("claim_id")
-    .agg(
-        collect_list("vitamin_name").alias("vitamin_names")
-    )
+    vit.groupBy("claim_id")
+        .agg(
+            collect_list("vitamin_name").alias("vitamin_names")
+        )
 )
 
-# 6. Join semua ke header
+print("Procedure, Drug, Vitamin aggregated.")
+
+
+# ----------------------------------------------------------------------------------
+# 4. JOIN SEMUA KE HEADER
+# ----------------------------------------------------------------------------------
+
 base = (
     hdr.alias("h")
     .join(diag_primary.alias("d"), "claim_id", "left")
@@ -63,47 +84,61 @@ base = (
     .join(vit_agg.alias("v"), "claim_id", "left")
 )
 
-# 7. Derive umur dan tanggal
+print("Joined all base tables.")
+
+
+# ----------------------------------------------------------------------------------
+# 5. DERIVE TANGGAL & USIA
+# ----------------------------------------------------------------------------------
+
 base = (
     base
-    .withColumn("patient_age",
-                when(col("patient_dob").isNotNull(),
-                     year(col("visit_date")) - year(col("patient_dob"))
-                ).otherwise(lit(None)))
+    .withColumn(
+        "patient_age",
+        when(
+            col("patient_dob").isNotNull(),
+            year(col("visit_date")) - year(col("patient_dob"))
+        ).otherwise(lit(None))
+    )
     .withColumn("visit_year", year(col("visit_date")))
     .withColumn("visit_month", month(col("visit_date")))
     .withColumn("visit_day", dayofmonth(col("visit_date")))
 )
 
-# 8. Fitur tindakan_validity_score
-base = base.withColumn(
-    "tindakan_validity_score",
-    when(col("procedures_icd9_codes").isNull() | (countDistinct("procedures_icd9_codes").over(Window.partitionBy("claim_id")) == 0), lit(0.3))
-    .when((col("procedures_icd9_codes").isNotNull()) &
-          (countDistinct("procedures_icd9_codes").over(Window.partitionBy("claim_id")) == 1), lit(0.7))
-    .otherwise(lit(1.0))
-)
+print("Derived time and age.")
 
-# Catatan:
-# countDistinct over array tidak langsung support, jadi kita ganti dengan indikator sederhana:
-# ada procedure atau tidak. Versi lebih robust:
-base = base.drop("tindakan_validity_score")  # hapus dulu
+
+# ----------------------------------------------------------------------------------
+# 6. FEATURE: tindakan_validity_score
+# Logic:
+#  - No procedures  → 0.3
+#  - Has procedures → 1.0
+# ----------------------------------------------------------------------------------
 
 base = base.withColumn(
     "has_procedure",
-    when(col("procedures_icd9_codes").isNotNull(), lit(1)).otherwise(lit(0))
+    when(col("procedures_icd9_codes").isNull(), lit(0)).otherwise(lit(1))
 )
 
 base = base.withColumn(
     "tindakan_validity_score",
-    when(col("has_procedure") == 0, lit(0.3))
-    .otherwise(lit(1.0))
+    when(col("has_procedure") == 0, lit(0.3)).otherwise(lit(1.0))
 )
 
-# 9. Fitur obat_validity_score
+print("Feature: tindakan_validity_score done.")
+
+
+# ----------------------------------------------------------------------------------
+# 7. FEATURE: obat_validity_score
+# Logic:
+#  - ICD10 present + no drug → 0.4
+#  - ICD10 present + has drug → 1.0
+#  - No ICD10 → 0.8
+# ----------------------------------------------------------------------------------
+
 base = base.withColumn(
     "has_drug",
-    when(col("drug_codes").isNotNull(), lit(1)).otherwise(lit(0))
+    when(col("drug_codes").isNull(), lit(0)).otherwise(lit(1))
 )
 
 base = base.withColumn(
@@ -113,10 +148,20 @@ base = base.withColumn(
     .otherwise(lit(0.8))
 )
 
-# 10. Fitur vitamin_relevance_score
+print("Feature: obat_validity_score done.")
+
+
+# ----------------------------------------------------------------------------------
+# 8. FEATURE: vitamin_relevance_score
+# Logic:
+#  - Has vitamin + no drug → 0.2
+#  - Has vitamin + has drug → 0.7
+#  - No vitamin → 1.0
+# ----------------------------------------------------------------------------------
+
 base = base.withColumn(
     "has_vitamin",
-    when(col("vitamin_names").isNotNull(), lit(1)).otherwise(lit(0))
+    when(col("vitamin_names").isNull(), lit(0)).otherwise(lit(1))
 )
 
 base = base.withColumn(
@@ -126,7 +171,13 @@ base = base.withColumn(
     .otherwise(lit(1.0))
 )
 
-# 11. Biaya anomaly score (z-score per (icd10_primary_code, visit_type))
+print("Feature: vitamin_relevance_score done.")
+
+
+# ----------------------------------------------------------------------------------
+# 9. FEATURE: biaya_anomaly_score (Z-score)
+# ----------------------------------------------------------------------------------
+
 w_cost = Window.partitionBy("icd10_primary_code", "visit_type")
 
 base = (
@@ -142,34 +193,42 @@ base = (
     )
 )
 
-# 12. Rule violation flag dan reason
-base = (
-    base
-    .withColumn(
-        "rule_violation_flag",
-        when(
-            (col("tindakan_validity_score") < 0.5) |
-            (col("obat_validity_score") < 0.5) |
-            (col("vitamin_relevance_score") < 0.5) |
-            (col("biaya_anomaly_score") > 2.5),
-            lit(1)
-        ).otherwise(lit(0))
-    )
+print("Feature: biaya_anomaly_score done.")
+
+
+# ----------------------------------------------------------------------------------
+# 10. RULE VIOLATION FLAG
+# ----------------------------------------------------------------------------------
+
+base = base.withColumn(
+    "rule_violation_flag",
+    when(
+        (col("tindakan_validity_score") < 0.5) |
+        (col("obat_validity_score") < 0.5) |
+        (col("vitamin_relevance_score") < 0.5) |
+        (col("biaya_anomaly_score") > 2.5),
+        lit(1)
+    ).otherwise(lit(0))
 )
 
-# Reason string sederhana, bisa kamu kembangkan nanti
 base = base.withColumn(
     "rule_violation_reason",
     when(col("rule_violation_flag") == 0, lit(None))
     .otherwise(
         when(col("tindakan_validity_score") < 0.5, lit("Tindakan minim atau tidak ada"))
-        .when(col("obat_validity_score") < 0.5, lit("Obat tidak sesuai pola diagnosis"))
-        .when(col("vitamin_relevance_score") < 0.5, lit("Vitamin tidak relevan tanpa obat utama"))
-        .when(col("biaya_anomaly_score") > 2.5, lit("Biaya anomali tinggi dibanding grup sejenis"))
+        .when(col("obat_validity_score") < 0.5, lit("Obat tidak sesuai diagnosis"))
+        .when(col("vitamin_relevance_score") < 0.5, lit("Vitamin tidak relevan"))
+        .when(col("biaya_anomaly_score") > 2.5, lit("Biaya anomali tinggi"))
     )
 )
 
-# 13. Pilih kolom untuk feature set
+print("Rule evaluation done.")
+
+
+# ----------------------------------------------------------------------------------
+# 11. SELECT FINAL FEATURE COLUMNS
+# ----------------------------------------------------------------------------------
+
 feature_df = base.select(
     col("claim_id"),
     col("patient_nik"),
@@ -206,10 +265,19 @@ feature_df = base.select(
     col("biaya_anomaly_score"),
     col("rule_violation_flag"),
     col("rule_violation_reason"),
+
     current_timestamp().alias("created_at")
 )
 
-# 14. Tulis ke Iceberg curated table dengan overwrite per partition (simple full overwrite dulu)
+print("Final feature DF ready.")
+
+
+# ----------------------------------------------------------------------------------
+# 12. WRITE TO ICEBERG CURATED
+# ----------------------------------------------------------------------------------
+
 feature_df.writeTo("iceberg_curated.claim_feature_set").overwritePartitions()
+
+print("=== ETL COMPLETED SUCCESSFULLY ===")
 
 spark.stop()
