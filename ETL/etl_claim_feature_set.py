@@ -20,11 +20,11 @@ print("=== START ETL FEATURE SET (CML + HadoopCatalog) ===")
 # 2. LOAD RAW TABLES (HadoopCatalog via 'ice.')
 # ====================================================================================
 
-hdr  = spark.sql("SELECT * FROM ice.iceberg_raw.claim_header_raw")
-diag = spark.sql("SELECT * FROM ice.iceberg_raw.claim_diagnosis_raw")
-proc = spark.sql("SELECT * FROM ice.iceberg_raw.claim_procedure_raw")
-drug = spark.sql("SELECT * FROM ice.iceberg_raw.claim_drug_raw")
-vit  = spark.sql("SELECT * FROM ice.iceberg_raw.claim_vitamin_raw")
+hdr  = spark.sql("SELECT * FROM iceberg_raw.claim_header_raw")
+diag = spark.sql("SELECT * FROM iceberg_raw.claim_diagnosis_raw")
+proc = spark.sql("SELECT * FROM iceberg_raw.claim_procedure_raw")
+drug = spark.sql("SELECT * FROM iceberg_raw.claim_drug_raw")
+vit  = spark.sql("SELECT * FROM iceberg_raw.claim_vitamin_raw")
 
 print("Loaded raw tables using ice. catalog")
 
@@ -203,7 +203,7 @@ print("Final DataFrame ready.")
 
 (
     feature_df
-        .writeTo("ice.iceberg_curated.claim_feature_set")
+        .writeTo("iceberg_curated.claim_feature_set")
         .overwritePartitions()   # works for Iceberg v2
 )
 
