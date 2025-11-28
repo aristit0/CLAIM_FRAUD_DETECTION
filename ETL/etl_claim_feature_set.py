@@ -1,43 +1,37 @@
-from pyspark.sql import SparkSession
+import cml.data_v1 as cmldata
 from pyspark.sql.functions import (
     col, lit, when, collect_list, first, year, month, dayofmonth,
     avg, stddev_pop, abs as spark_abs, current_timestamp
 )
 from pyspark.sql.window import Window
 
+# ====================================================================================
+# 1. CONNECT TO SPARK VIA CML
+# ====================================================================================
 
-# ----------------------------------------------------------------------------------
-# SPARK SESSION
-# ----------------------------------------------------------------------------------
+CONNECTION_NAME = "CDP-MSI"
+conn = cmldata.get_connection(CONNECTION_NAME)
+spark = conn.get_spark_session()
 
-spark = (
-    SparkSession.builder
-        .appName("claim_feature_set_etl")
-        .config("spark.sql.catalog.ice", "org.apache.iceberg.spark.SparkCatalog")
-        .config("spark.sql.catalog.ice.type", "hadoop")
-        .config("spark.sql.catalog.ice.warehouse", "hdfs:///warehouse/tablespace/external/hive/")  
-        .config("spark.serializer", "org.apache.spark.serializer.JavaSerializer")
-        .getOrCreate()
-)
-print("=== START ETL FEATURE SET ===")
+print("=== START ETL FEATURE SET (CML + HadoopCatalog) ===")
 
 
-# ----------------------------------------------------------------------------------
-# 1. LOAD RAW ICEBERG TABLES
-# ----------------------------------------------------------------------------------
+# ====================================================================================
+# 2. LOAD RAW TABLES (HadoopCatalog via 'ice.')
+# ====================================================================================
 
-hdr  = spark.table("iceberg_raw.claim_header_raw")
-diag = spark.table("iceberg_raw.claim_diagnosis_raw")
-proc = spark.table("iceberg_raw.claim_procedure_raw")
-drug = spark.table("iceberg_raw.claim_drug_raw")
-vit  = spark.table("iceberg_raw.claim_vitamin_raw")
+hdr  = spark.sql("SELECT * FROM ice.iceberg_raw.claim_header_raw")
+diag = spark.sql("SELECT * FROM ice.iceberg_raw.claim_diagnosis_raw")
+proc = spark.sql("SELECT * FROM ice.iceberg_raw.claim_procedure_raw")
+drug = spark.sql("SELECT * FROM ice.iceberg_raw.claim_drug_raw")
+vit  = spark.sql("SELECT * FROM ice.iceberg_raw.claim_vitamin_raw")
 
-print("Loaded raw tables.")
+print("Loaded raw tables using ice. catalog")
 
 
-# ----------------------------------------------------------------------------------
-# 2. PRIMARY DIAGNOSIS PER CLAIM
-# ----------------------------------------------------------------------------------
+# ====================================================================================
+# 3. PRIMARY DIAGNOSIS
+# ====================================================================================
 
 diag_primary = (
     diag.where(col("is_primary") == 1)
@@ -49,9 +43,9 @@ diag_primary = (
 )
 
 
-# ----------------------------------------------------------------------------------
-# 3. AGGREGATE PROCEDURE, DRUG, VITAMIN
-# ----------------------------------------------------------------------------------
+# ====================================================================================
+# 4. AGGREGATIONS
+# ====================================================================================
 
 proc_agg = (
     proc.groupBy("claim_id")
@@ -76,12 +70,10 @@ vit_agg = (
         )
 )
 
-print("Aggregated proc/drug/vitamin.")
 
-
-# ----------------------------------------------------------------------------------
-# 4. JOIN SEMUA KE HEADER
-# ----------------------------------------------------------------------------------
+# ====================================================================================
+# 5. JOIN KE HEADER
+# ====================================================================================
 
 base = (
     hdr.alias("h")
@@ -92,9 +84,9 @@ base = (
 )
 
 
-# ----------------------------------------------------------------------------------
-# 5. DERIVE TANGGAL & USIA
-# ----------------------------------------------------------------------------------
+# ====================================================================================
+# 6. DERIVED COLUMNS (TANGGAL, USIA, dll)
+# ====================================================================================
 
 base = (
     base
@@ -103,7 +95,7 @@ base = (
         when(
             col("patient_dob").isNotNull(),
             year(col("visit_date")) - year(col("patient_dob"))
-        ).otherwise(lit(None))
+        )
     )
     .withColumn("visit_year", year(col("visit_date")).cast("int"))
     .withColumn("visit_month", month(col("visit_date")).cast("int"))
@@ -111,56 +103,38 @@ base = (
 )
 
 
-# ----------------------------------------------------------------------------------
-# 6. tindakan_validity_score
-# ----------------------------------------------------------------------------------
-
+# tindakan_validity_score
 base = base.withColumn(
     "tindakan_validity_score",
     when(col("procedures_icd9_codes").isNull(), lit(0.3)).otherwise(lit(1.0))
 )
 
-
-# ----------------------------------------------------------------------------------
-# 7. obat_validity_score
-# ----------------------------------------------------------------------------------
-
-base = base.withColumn(
-    "has_drug",
-    when(col("drug_codes").isNull(), lit(0)).otherwise(lit(1))
+# obat_validity_score
+base = (
+    base
+    .withColumn("has_drug", when(col("drug_codes").isNull(), lit(0)).otherwise(lit(1)))
+    .withColumn(
+        "obat_validity_score",
+        when((col("icd10_primary_code").isNotNull()) & (col("has_drug") == 1), lit(1.0))
+        .when((col("icd10_primary_code").isNotNull()) & (col("has_drug") == 0), lit(0.4))
+        .otherwise(lit(0.8))
+    )
 )
 
-base = base.withColumn(
-    "obat_validity_score",
-    when((col("icd10_primary_code").isNotNull()) & (col("has_drug") == 1), lit(1.0))
-    .when((col("icd10_primary_code").isNotNull()) & (col("has_drug") == 0), lit(0.4))
-    .otherwise(lit(0.8))
+# vitamin_relevance_score
+base = (
+    base
+    .withColumn("has_vitamin", when(col("vitamin_names").isNull(), lit(0)).otherwise(lit(1)))
+    .withColumn(
+        "vitamin_relevance_score",
+        when((col("has_vitamin") == 1) & (col("has_drug") == 0), lit(0.2))
+        .when((col("has_vitamin") == 1) & (col("has_drug") == 1), lit(0.7))
+        .otherwise(lit(1.0))
+    )
 )
 
-
-# ----------------------------------------------------------------------------------
-# 8. vitamin_relevance_score
-# ----------------------------------------------------------------------------------
-
-base = base.withColumn(
-    "has_vitamin",
-    when(col("vitamin_names").isNull(), lit(0)).otherwise(lit(1))
-)
-
-base = base.withColumn(
-    "vitamin_relevance_score",
-    when((col("has_vitamin") == 1) & (col("has_drug") == 0), lit(0.2))
-    .when((col("has_vitamin") == 1) & (col("has_drug") == 1), lit(0.7))
-    .otherwise(lit(1.0))
-)
-
-
-# ----------------------------------------------------------------------------------
-# 9. biaya_anomaly_score (Z-score)
-# ----------------------------------------------------------------------------------
-
+# biaya_anomaly_score via Z-score
 w_cost = Window.partitionBy("icd10_primary_code", "visit_type")
-
 base = (
     base
     .withColumn("mean_cost", avg(col("total_claim_amount")).over(w_cost))
@@ -174,48 +148,63 @@ base = (
     )
 )
 
-
-# ----------------------------------------------------------------------------------
-# 10. RULE VIOLATION
-# ----------------------------------------------------------------------------------
-
-base = base.withColumn(
-    "rule_violation_flag",
-    when(
-        (col("tindakan_validity_score") < 0.5) |
-        (col("obat_validity_score") < 0.5) |
-        (col("vitamin_relevance_score") < 0.5) |
-        (col("biaya_anomaly_score") > 2.5),
-        lit(1)
-    ).otherwise(lit(0))
-)
-
-base = base.withColumn(
-    "rule_violation_reason",
-    when(col("rule_violation_flag") == 0, lit(None))
-    .otherwise(
-        when(col("tindakan_validity_score") < 0.5, lit("Tindakan minim atau tidak ada"))
-        .when(col("obat_validity_score") < 0.5, lit("Obat tidak sesuai diagnosis"))
-        .when(col("vitamin_relevance_score") < 0.5, lit("Vitamin tidak relevan"))
-        .when(col("biaya_anomaly_score") > 2.5, lit("Biaya anomali tinggi"))
+# rule violation
+base = (
+    base
+    .withColumn(
+        "rule_violation_flag",
+        when(
+            (col("tindakan_validity_score") < 0.5) |
+            (col("obat_validity_score") < 0.5) |
+            (col("vitamin_relevance_score") < 0.5) |
+            (col("biaya_anomaly_score") > 2.5),
+            lit(1)
+        ).otherwise(lit(0))
+    )
+    .withColumn(
+        "rule_violation_reason",
+        when(col("rule_violation_flag") == 0, lit(None))
+        .otherwise(
+            when(col("tindakan_validity_score") < 0.5, lit("Tindakan minim atau tidak ada"))
+            .when(col("obat_validity_score") < 0.5, lit("Obat tidak sesuai diagnosis"))
+            .when(col("vitamin_relevance_score") < 0.5, lit("Vitamin tidak relevan"))
+            .when(col("biaya_anomaly_score") > 2.5, lit("Biaya anomali tinggi"))
+        )
     )
 )
 
 
-# ----------------------------------------------------------------------------------
-# 11. FINAL SELECT (URUTAN WAJIB MATCH DDL!)
-# ----------------------------------------------------------------------------------
-feature_df = base.select("*", current_timestamp().alias("created_at"))
+# ====================================================================================
+# 7. FINAL DATAFRAME
+# ====================================================================================
 
-print("Final DF ready.")
+feature_df = base.select(
+    "claim_id", "patient_nik", "patient_name", "patient_gender",
+    "patient_dob", "patient_age", "visit_date",
+    "visit_year", "visit_month", "visit_day",
+    "visit_type", "doctor_name", "department",
+    "icd10_primary_code", "icd10_primary_desc",
+    "procedures_icd9_codes", "procedures_icd9_descs",
+    "drug_codes", "drug_names", "vitamin_names",
+    "total_procedure_cost", "total_drug_cost",
+    "total_vitamin_cost", "total_claim_amount",
+    "tindakan_validity_score", "obat_validity_score",
+    "vitamin_relevance_score", "biaya_anomaly_score",
+    "rule_violation_flag", "rule_violation_reason",
+    current_timestamp().alias("created_at")
+)
+
+print("Final DataFrame ready.")
 
 
+# ====================================================================================
+# 8. WRITE USING ICEBERG V2 (HadoopCatalog)
+# ====================================================================================
 
-# ----------------------------------------------------------------------------------
-# 12. WRITE USING SQL (PALING STABIL DI CDP)
-# ----------------------------------------------------------------------------------
-
-feature_df.writeTo("ice.iceberg_curated.claim_feature_set").overwritePartitions()
+(
+    feature_df
+        .writeTo("ice.iceberg_curated.claim_feature_set")
+        .overwritePartitions()   # works for Iceberg v2
+)
 
 print("=== ETL COMPLETED SUCCESSFULLY ===")
-spark.stop()
