@@ -2,7 +2,7 @@ from pyspark.sql import SparkSession
 
 spark = (
     SparkSession.builder
-    .appName("CreateIcebergV2FeatureSet")
+    .appName("iceberg_create")
     .config("spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkSessionCatalog")
     .config("spark.sql.catalog.spark_catalog.type", "hive")
     .getOrCreate()
@@ -50,3 +50,5 @@ TBLPROPERTIES ('format-version'='2')
 """)
 
 print("Iceberg v2 table created successfully!")
+
+spark.table("iceberg_curated.claim_feature_set").printSchema()

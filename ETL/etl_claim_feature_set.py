@@ -254,39 +254,7 @@ feature_df.createOrReplaceTempView("feature_tmp")
 
 spark.sql("""
 INSERT OVERWRITE TABLE iceberg_curated.claim_feature_set
-SELECT
-    claim_id,
-    patient_nik,
-    patient_name,
-    patient_gender,
-    patient_dob,
-    patient_age,
-    visit_date,
-    visit_day,
-    visit_type,
-    doctor_name,
-    department,
-    icd10_primary_code,
-    icd10_primary_desc,
-    procedures_icd9_codes,
-    procedures_icd9_descs,
-    drug_codes,
-    drug_names,
-    vitamin_names,
-    total_procedure_cost,
-    total_drug_cost,
-    total_vitamin_cost,
-    total_claim_amount,
-    tindakan_validity_score,
-    obat_validity_score,
-    vitamin_relevance_score,
-    biaya_anomaly_score,
-    rule_violation_flag,
-    rule_violation_reason,
-    created_at,
-    visit_year,
-    visit_month
-FROM feature_tmp
+SELECT * FROM feature_tmp
 """)
 
 print("=== ETL COMPLETED SUCCESSFULLY ===")
