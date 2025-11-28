@@ -1,13 +1,3 @@
-from pyspark.sql import SparkSession
-
-spark = (
-    SparkSession.builder
-    .appName("CreateIcebergV2FeatureSet")
-    .config("spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkSessionCatalog")
-    .config("spark.sql.catalog.spark_catalog.type", "hive")
-    .getOrCreate()
-)
-
 spark.sql("DROP TABLE IF EXISTS iceberg_curated.claim_feature_set")
 
 spark.sql("""
@@ -19,6 +9,8 @@ CREATE TABLE iceberg_curated.claim_feature_set (
     patient_dob DATE,
     patient_age INT,
     visit_date DATE,
+    visit_year INT,
+    visit_month INT,
     visit_day INT,
     visit_type STRING,
     doctor_name STRING,
@@ -47,4 +39,4 @@ PARTITIONED BY (visit_year, visit_month)
 TBLPROPERTIES ('format-version'='2')
 """)
 
-print("Iceberg v2 table claim_feature_set CREATED.")
+print("Iceberg v2 table created successfully!")
