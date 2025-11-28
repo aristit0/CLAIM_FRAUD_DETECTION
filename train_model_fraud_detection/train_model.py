@@ -138,60 +138,25 @@ print("AUC:", auc)
 print("F1 :", f1)
 print(classification_report(y_test, y_pred))
 
-
 # ============================================
-# 7. Export model untuk deployment
+# 7. Export model untuk deployment (FINAL)
 # ============================================
 
 EXPORT_DIR = "model_export"
 
-# hapus folder lama
+# Hapus folder lama
 if os.path.exists(EXPORT_DIR):
     shutil.rmtree(EXPORT_DIR)
 
-# buat folder root
-os.makedirs(EXPORT_DIR, exist_ok=True)
-
-# buat folder model dan artifacts
+# Buat struktur folder
 os.makedirs(f"{EXPORT_DIR}/model", exist_ok=True)
 os.makedirs(f"{EXPORT_DIR}/artifacts", exist_ok=True)
 
-# simpan model
+# Simpan model
 with open(f"{EXPORT_DIR}/model/model.pkl", "wb") as f:
     pickle.dump(model, f)
 
-# simpan preprocess
-with open(f"{EXPORT_DIR}/artifacts/preprocess.pkl", "wb") as f:
-    pickle.dump(
-        {
-            "numeric_cols": numeric_cols,
-            "cat_cols": cat_cols,
-            "encoders": encoders,
-            "feature_names": list(X.columns),
-            "label_col": label_col,
-        },
-        f,
-    )
-
-print("Model exported to:", EXPORT_DIR)
-# ============================================
-# 8. Export model for deployment
-# ============================================
-import shutil
-
-EXPORT_DIR = "model_export"
-
-# delete old export if exists
-if os.path.exists(EXPORT_DIR):
-    shutil.rmtree(EXPORT_DIR)
-
-os.makedirs(EXPORT_DIR, exist_ok=True)
-
-# Save model.pkl
-with open(f"{EXPORT_DIR}/model/model.pkl", "wb") as f:
-    pickle.dump(model, f)
-
-# Save preprocess.pkl
+# Simpan preprocess
 with open(f"{EXPORT_DIR}/artifacts/preprocess.pkl", "wb") as f:
     pickle.dump(
         {
@@ -204,16 +169,16 @@ with open(f"{EXPORT_DIR}/artifacts/preprocess.pkl", "wb") as f:
         f,
     )
 
-# metadata
+# Simpan metadata
 with open(f"{EXPORT_DIR}/meta.json", "w") as f:
     json.dump(
         {
             "description": "Fraud detection model for claims",
             "algorithm": "XGBoost",
-            "version": "v1",
+            "version": "v1"
         },
         f,
         indent=2
     )
 
-print("=== MODEL EXPORTED TO model_export/ ===")
+print("=== MODEL EXPORTED SUCCESSFULLY TO model_export/ ===")
