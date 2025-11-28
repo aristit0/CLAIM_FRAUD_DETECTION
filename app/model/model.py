@@ -5,17 +5,18 @@ import pandas as pd
 import pickle
 
 # ============================================
-# LOAD MODEL & PREPROCESS DARI model_export/
+# LOAD MODEL & PREPROCESS (FLAT FILES)
+# CML Model Serving meletakkan semua Resources
+# langsung di: /app/model/
 # ============================================
 
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
-EXPORT_DIR = os.path.join(BASE_PATH, "model/model_export")
 
-MODEL_FILE = os.path.join(EXPORT_DIR, "model", "model.pkl")
-PREPROCESS_FILE = os.path.join(EXPORT_DIR, "artifacts", "preprocess.pkl")
-META_FILE = os.path.join(EXPORT_DIR, "meta.json")
+MODEL_FILE = os.path.join(BASE_PATH, "model.pkl")
+PREPROCESS_FILE = os.path.join(BASE_PATH, "preprocess.pkl")
+META_FILE = os.path.join(BASE_PATH, "meta.json")
 
-print("Loading model & preprocess from model_export/...")
+print("Loading model & preprocess from /app/model/...")
 
 with open(MODEL_FILE, "rb") as f:
     model = pickle.load(f)
@@ -39,12 +40,12 @@ print("Model & preprocess loaded successfully.")
 def _build_feature_df(records):
     df = pd.DataFrame.from_records(records)
 
-    # Pastikan semua kolom tersedia
+    # Ensure all model columns exist
     for c in numeric_cols + cat_cols:
         if c not in df.columns:
             df[c] = None
 
-    # Encode kategorikal
+    # Encode categorical
     for c in cat_cols:
         le = encoders[c]
         df[c] = df[c].fillna("__MISSING__").astype(str)
@@ -57,7 +58,7 @@ def _build_feature_df(records):
 
         df[c] = le.transform(df[c])
 
-    # Numeric
+    # Numeric columns sanitizing
     for c in numeric_cols:
         df[c] = df[c].astype(float).fillna(0.0)
 
@@ -86,7 +87,7 @@ def _derive_suspicious_sections(row):
 
 
 # ============================================
-# GLOBAL FEATURE IMPORTANCE
+# GLOBAL FEATURE IMPORTANCE (STATIC MODEL INFO)
 # ============================================
 
 def _build_feature_importance():
@@ -98,7 +99,7 @@ GLOBAL_FEATURE_IMPORTANCE = _build_feature_importance()
 
 
 # ============================================
-# MAIN PREDICT FUNCTION FOR MODEL SERVING
+# MAIN PREDICT FUNCTION (CML ENTRY POINT)
 # ============================================
 
 def predict(data):
