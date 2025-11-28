@@ -145,17 +145,22 @@ print(classification_report(y_test, y_pred))
 
 EXPORT_DIR = "model_export"
 
-# hapus folder kalau sudah ada
+# hapus folder lama
 if os.path.exists(EXPORT_DIR):
     shutil.rmtree(EXPORT_DIR)
 
+# buat folder root
 os.makedirs(EXPORT_DIR, exist_ok=True)
+
+# buat folder model dan artifacts
+os.makedirs(f"{EXPORT_DIR}/model", exist_ok=True)
+os.makedirs(f"{EXPORT_DIR}/artifacts", exist_ok=True)
 
 # simpan model
 with open(f"{EXPORT_DIR}/model/model.pkl", "wb") as f:
     pickle.dump(model, f)
 
-# simpan preprocessing
+# simpan preprocess
 with open(f"{EXPORT_DIR}/artifacts/preprocess.pkl", "wb") as f:
     pickle.dump(
         {
@@ -165,24 +170,10 @@ with open(f"{EXPORT_DIR}/artifacts/preprocess.pkl", "wb") as f:
             "feature_names": list(X.columns),
             "label_col": label_col,
         },
-        f
-    )
-
-# metadata
-with open(f"{EXPORT_DIR}/meta.json", "w") as f:
-    json.dump(
-        {
-            "description": "Fraud detection for claim dataset",
-            "algorithm": "XGBoost",
-            "version": "v1"
-        },
         f,
-        indent=2
     )
 
-print("=== MODEL EXPORTED TO model_export/ ===")
-
-
+print("Model exported to:", EXPORT_DIR)
 # ============================================
 # 8. Export model for deployment
 # ============================================
