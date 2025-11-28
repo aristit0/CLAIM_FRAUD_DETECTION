@@ -209,7 +209,6 @@ feature_df = base.select("*", current_timestamp().alias("created_at"))
 
 print("Final DF ready.")
 
-feature_df.createOrReplaceTempView("feature_tmp")
 
 
 # ----------------------------------------------------------------------------------
