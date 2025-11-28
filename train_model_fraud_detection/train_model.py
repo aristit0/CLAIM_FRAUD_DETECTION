@@ -7,6 +7,7 @@ import xgboost as xgb
 import mlflow
 import mlflow.xgboost
 
+
 # ============================================
 # 1. Connect ke Spark via CML
 # ============================================
@@ -24,10 +25,10 @@ df_spark = spark.sql("""
 df_spark.printSchema()
 print(f"Total rows: {df_spark.count()}")
 
+
 # ============================================
 # 2. Pilih kolom feature & label
 # ============================================
-
 label_col = "rule_violation_flag"
 
 numeric_cols = [
@@ -52,43 +53,36 @@ cat_cols = [
 ]
 
 all_cols = numeric_cols + cat_cols + [label_col]
-
 df_spark_sel = df_spark.select(*[col(c) for c in all_cols])
 
-# Kalau datanya super besar dan kamu cuma mau sampling:
-# df_spark_sel = df_spark_sel.sample(withReplacement=False, fraction=0.3)
-
-# Convert ke pandas
+# Convert to pandas
 df = df_spark_sel.dropna(subset=[label_col]).toPandas()
 print(df.head())
 print(df[label_col].value_counts())
 
+
 # ============================================
 # 3. Encode categorical & handle nulls
 # ============================================
-
 encoders = {}
 for c in cat_cols:
     le = LabelEncoder()
-    # fillna ke string spesial biar tidak error
-    df[c] = df[c].fillna("__MISSING__")
-    df[c] = le.fit_transform(df[c].astype(str))
+    df[c] = df[c].fillna("__MISSING__").astype(str)
+    df[c] = le.fit_transform(df[c])
     encoders[c] = le
 
-# Numeric null -> 0 (atau bisa pakai median, terserah kamu nanti tweak)
 for c in numeric_cols:
     df[c] = df[c].fillna(0.0)
 
 X = df[numeric_cols + cat_cols]
 y = df[label_col].astype(int)
 
-print(X.shape, y.shape)
+print("Shape:", X.shape, y.shape)
 
 
 # ============================================
-# 4. Train / test split (stratified)
+# 4. Train-test split
 # ============================================
-
 X_train, X_test, y_train, y_test = train_test_split(
     X, y,
     test_size=0.2,
@@ -96,18 +90,16 @@ X_train, X_test, y_train, y_test = train_test_split(
     stratify=y
 )
 
-print("Train size:", X_train.shape[0])
-print("Test size :", X_test.shape[0])
+print("Train size:", len(X_train))
+print("Test size:", len(X_test))
 
 
 # ============================================
-# 5. Train XGBoost model
+# 5. Train XGBoost
 # ============================================
-
 pos_ratio = (y_train == 1).sum() / len(y_train)
 neg_ratio = (y_train == 0).sum() / len(y_train)
 scale_pos_weight = neg_ratio / pos_ratio if pos_ratio > 0 else 1.0
-print("scale_pos_weight:", scale_pos_weight)
 
 model = xgb.XGBClassifier(
     n_estimators=300,
@@ -130,6 +122,9 @@ model.fit(
 )
 
 
+# ============================================
+# 6. Evaluate
+# ============================================
 from sklearn.metrics import roc_auc_score, f1_score, classification_report
 
 y_pred_proba = model.predict_proba(X_test)[:, 1]
@@ -144,9 +139,8 @@ print(classification_report(y_test, y_pred))
 
 
 # ============================================
-# 6. Log ke MLflow & register model
+# 7. Log ke MLflow (TANPA REGISTRY)
 # ============================================
-
 mlflow.set_experiment("fraud_detection_claims")
 
 feature_names = list(X.columns)
@@ -161,10 +155,8 @@ with mlflow.start_run(run_name="xgboost_fraud_detection_v1"):
     mlflow.log_metric("auc", auc)
     mlflow.log_metric("f1", f1)
 
-    # Simpan info preprocessing sebagai artifact
-    import pickle, os, json
-    import tempfile
-
+    # Simpan preprocessing sebagai artifact
+    import pickle, os, json, tempfile
     temp_dir = tempfile.mkdtemp()
     preprocess_path = os.path.join(temp_dir, "preprocess.pkl")
     meta_path = os.path.join(temp_dir, "meta.json")
@@ -194,14 +186,12 @@ with mlflow.start_run(run_name="xgboost_fraud_detection_v1"):
     mlflow.log_artifact(preprocess_path, artifact_path="artifacts")
     mlflow.log_artifact(meta_path, artifact_path="artifacts")
 
-    # Log XGBoost model
+    # Log model ke MLflow (TANPA REGISTER MODEL)
     mlflow.xgboost.log_model(
         model,
-        artifact_path="model",
-        registered_model_name="fraud_detection_claims_xgb"
+        artifact_path="model"
     )
 
-    run_id = mlflow.active_run().info.run_id
-    print("Logged run_id:", run_id)
+    print("Run ID:", mlflow.active_run().info.run_id)
 
-    
+print("=== TRAINING COMPLETED ===")
