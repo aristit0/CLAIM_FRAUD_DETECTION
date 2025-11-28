@@ -35,31 +35,44 @@ print("Model & preprocess loaded successfully.")
 # ============================================
 
 def _build_feature_df(records):
-    df = pd.DataFrame.from_records(records)
 
-    # Pastikan semua kolom tersedia
+    print("DEBUG: Building DF...")
+
+    df = pd.DataFrame.from_records(records)
+    print("DEBUG: Raw DF columns:", df.columns.tolist())
+
+    # Ensure columns exist
     for c in numeric_cols + cat_cols:
         if c not in df.columns:
             df[c] = None
 
-    # Encode kategorikal
+    print("DEBUG: Columns aligned")
+
+    # Category encoding
     for c in cat_cols:
+        df[c] = df[c].astype(str).fillna("__MISSING__")
         le = encoders[c]
-        df[c] = df[c].fillna("__MISSING__").astype(str)
 
         known = set(le.classes_)
         df[c] = df[c].apply(lambda v: v if v in known else "__MISSING__")
 
+        # ensure "__MISSING__" exists
         if "__MISSING__" not in known:
             le.classes_ = np.append(le.classes_, "__MISSING__")
 
         df[c] = le.transform(df[c])
 
-    # Numeric
+    print("DEBUG: categorical OK")
+
+    # Numerics
     for c in numeric_cols:
-        df[c] = df[c].astype(float).fillna(0.0)
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+
+    print("DEBUG: numeric OK")
 
     X = df[numeric_cols + cat_cols]
+    print("DEBUG: final X shape:", X.shape)
+
     return df, X
 
 
