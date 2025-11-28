@@ -152,11 +152,11 @@ if os.path.exists(EXPORT_DIR):
 os.makedirs(EXPORT_DIR, exist_ok=True)
 
 # simpan model
-with open(f"{EXPORT_DIR}/model.pkl", "wb") as f:
+with open(f"{EXPORT_DIR}/model/model.pkl", "wb") as f:
     pickle.dump(model, f)
 
 # simpan preprocessing
-with open(f"{EXPORT_DIR}/preprocess.pkl", "wb") as f:
+with open(f"{EXPORT_DIR}/artifacts/preprocess.pkl", "wb") as f:
     pickle.dump(
         {
             "numeric_cols": numeric_cols,
@@ -197,11 +197,11 @@ if os.path.exists(EXPORT_DIR):
 os.makedirs(EXPORT_DIR, exist_ok=True)
 
 # Save model.pkl
-with open(f"{EXPORT_DIR}/model.pkl", "wb") as f:
+with open(f"{EXPORT_DIR}/model/model.pkl", "wb") as f:
     pickle.dump(model, f)
 
 # Save preprocess.pkl
-with open(f"{EXPORT_DIR}/preprocess.pkl", "wb") as f:
+with open(f"{EXPORT_DIR}/artifacts/preprocess.pkl", "wb") as f:
     pickle.dump(
         {
             "numeric_cols": numeric_cols,
