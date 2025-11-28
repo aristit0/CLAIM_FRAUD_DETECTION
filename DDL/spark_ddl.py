@@ -1,3 +1,13 @@
+from pyspark.sql import SparkSession
+
+spark = (
+    SparkSession.builder
+    .appName("CreateIcebergV2FeatureSet")
+    .config("spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkSessionCatalog")
+    .config("spark.sql.catalog.spark_catalog.type", "hive")
+    .getOrCreate()
+)
+
 spark.sql("DROP TABLE IF EXISTS iceberg_curated.claim_feature_set")
 
 spark.sql("""
