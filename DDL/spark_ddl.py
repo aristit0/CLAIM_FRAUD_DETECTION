@@ -1,15 +1,45 @@
 from pyspark.sql import SparkSession
+import subprocess
 
+# ===============================================================
+# 1. SparkSession dengan Iceberg
+# ===============================================================
 spark = (
     SparkSession.builder
-    .appName("iceberg_create")
+    .appName("recreate_claim_feature_set")
     .config("spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkSessionCatalog")
     .config("spark.sql.catalog.spark_catalog.type", "hive")
     .getOrCreate()
 )
 
-spark.sql("DROP TABLE IF EXISTS iceberg_curated.claim_feature_set")
+print("=== START CLEAN RESET TABLE ===")
 
+# ===============================================================
+# 2. DROP TABLE dari Hive Metastore
+# ===============================================================
+
+spark.sql("""
+DROP TABLE IF EXISTS iceberg_curated.claim_feature_set
+""")
+
+print("[OK] Hive table dropped.")
+
+# ===============================================================
+# 3. DELETE HDFS TABLE DIRECTORY (WAJIB)
+#    (hapus folder lama untuk hilangkan schema lama di datafile lama)
+# ===============================================================
+
+hdfs_path = "/warehouse/tablespace/external/hive/iceberg_curated.db/claim_feature_set"
+
+try:
+    subprocess.run(["hdfs", "dfs", "-rm", "-r", "-f", hdfs_path], check=False)
+    print(f"[OK] HDFS folder deleted: {hdfs_path}")
+except Exception as e:
+    print(f"[WARN] Failed to delete HDFS directory: {e}")
+
+# ===============================================================
+# 4. RECREATE ICEBERG TABLE V2 (BERSIH)
+# ===============================================================
 
 spark.sql("""
 CREATE TABLE iceberg_curated.claim_feature_set (
@@ -50,6 +80,15 @@ PARTITIONED BY (visit_year, visit_month)
 TBLPROPERTIES ('format-version'='2')
 """)
 
-print("Iceberg v2 table created successfully!")
+print("[OK] Iceberg v2 table created.")
+
+
+# ===============================================================
+# 5. Print schema untuk memastikan semuanya clean & INT
+# ===============================================================
 
 spark.table("iceberg_curated.claim_feature_set").printSchema()
+
+print("=== CLEAN RESET COMPLETED ===")
+
+spark.stop()

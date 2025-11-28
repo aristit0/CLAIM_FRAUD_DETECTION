@@ -250,8 +250,7 @@ feature_df.createOrReplaceTempView("feature_tmp")
 # ----------------------------------------------------------------------------------
 
 spark.sql("""
-INSERT OVERWRITE TABLE iceberg_curated.claim_feature_set
-SELECT * FROM feature_tmp
+INSERT OVERWRITE TABLE iceberg_curated.claim_feature_set SELECT * FROM feature_tmp
 """)
 
 print("=== ETL COMPLETED SUCCESSFULLY ===")
