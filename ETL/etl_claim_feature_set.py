@@ -1,7 +1,7 @@
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col, lit, when, collect_list, first, year, month, dayofmonth,
-    avg, stddev_pop, abs as spark_abs, current_timestamp, size
+    avg, stddev_pop, abs as spark_abs, current_timestamp
 )
 from pyspark.sql.window import Window
 
@@ -10,8 +10,8 @@ from pyspark.sql.window import Window
 # ----------------------------------------------------------------------------------
 
 spark = SparkSession.builder.appName("claim_feature_set_etl").getOrCreate()
-
 print("=== START ETL FEATURE SET ===")
+
 
 # ----------------------------------------------------------------------------------
 # 1. LOAD RAW ICEBERG TABLES
@@ -38,8 +38,6 @@ diag_primary = (
             first("icd10_description").alias("icd10_primary_desc")
         )
 )
-
-print("Diagnosis primary aggregated.")
 
 
 # ----------------------------------------------------------------------------------
@@ -69,7 +67,7 @@ vit_agg = (
         )
 )
 
-print("Procedure, Drug, Vitamin aggregated.")
+print("Aggregated proc/drug/vitamin.")
 
 
 # ----------------------------------------------------------------------------------
@@ -83,8 +81,6 @@ base = (
     .join(drug_agg.alias("dr"), "claim_id", "left")
     .join(vit_agg.alias("v"), "claim_id", "left")
 )
-
-print("Joined all base tables.")
 
 
 # ----------------------------------------------------------------------------------
@@ -100,40 +96,24 @@ base = (
             year(col("visit_date")) - year(col("patient_dob"))
         ).otherwise(lit(None))
     )
-    .withColumn("visit_year", year(col("visit_date")))
-    .withColumn("visit_month", month(col("visit_date")))
-    .withColumn("visit_day", dayofmonth(col("visit_date")))
+    .withColumn("visit_year", year(col("visit_date")).cast("int"))
+    .withColumn("visit_month", month(col("visit_date")).cast("int"))
+    .withColumn("visit_day", dayofmonth(col("visit_date")).cast("int"))
 )
-
-print("Derived time and age.")
 
 
 # ----------------------------------------------------------------------------------
-# 6. FEATURE: tindakan_validity_score
-# Logic:
-#  - No procedures  → 0.3
-#  - Has procedures → 1.0
+# 6. tindakan_validity_score
 # ----------------------------------------------------------------------------------
-
-base = base.withColumn(
-    "has_procedure",
-    when(col("procedures_icd9_codes").isNull(), lit(0)).otherwise(lit(1))
-)
 
 base = base.withColumn(
     "tindakan_validity_score",
-    when(col("has_procedure") == 0, lit(0.3)).otherwise(lit(1.0))
+    when(col("procedures_icd9_codes").isNull(), lit(0.3)).otherwise(lit(1.0))
 )
-
-print("Feature: tindakan_validity_score done.")
 
 
 # ----------------------------------------------------------------------------------
-# 7. FEATURE: obat_validity_score
-# Logic:
-#  - ICD10 present + no drug → 0.4
-#  - ICD10 present + has drug → 1.0
-#  - No ICD10 → 0.8
+# 7. obat_validity_score
 # ----------------------------------------------------------------------------------
 
 base = base.withColumn(
@@ -148,15 +128,9 @@ base = base.withColumn(
     .otherwise(lit(0.8))
 )
 
-print("Feature: obat_validity_score done.")
-
 
 # ----------------------------------------------------------------------------------
-# 8. FEATURE: vitamin_relevance_score
-# Logic:
-#  - Has vitamin + no drug → 0.2
-#  - Has vitamin + has drug → 0.7
-#  - No vitamin → 1.0
+# 8. vitamin_relevance_score
 # ----------------------------------------------------------------------------------
 
 base = base.withColumn(
@@ -171,11 +145,9 @@ base = base.withColumn(
     .otherwise(lit(1.0))
 )
 
-print("Feature: vitamin_relevance_score done.")
-
 
 # ----------------------------------------------------------------------------------
-# 9. FEATURE: biaya_anomaly_score (Z-score)
+# 9. biaya_anomaly_score (Z-score)
 # ----------------------------------------------------------------------------------
 
 w_cost = Window.partitionBy("icd10_primary_code", "visit_type")
@@ -193,11 +165,9 @@ base = (
     )
 )
 
-print("Feature: biaya_anomaly_score done.")
-
 
 # ----------------------------------------------------------------------------------
-# 10. RULE VIOLATION FLAG
+# 10. RULE VIOLATION
 # ----------------------------------------------------------------------------------
 
 base = base.withColumn(
@@ -222,62 +192,90 @@ base = base.withColumn(
     )
 )
 
-print("Rule evaluation done.")
-
 
 # ----------------------------------------------------------------------------------
-# 11. SELECT FINAL FEATURE COLUMNS
+# 11. FINAL SELECT (URUTAN WAJIB MATCH DDL!)
 # ----------------------------------------------------------------------------------
 
 feature_df = base.select(
-    col("claim_id"),
-    col("patient_nik"),
-    col("patient_name"),
-    col("patient_gender"),
-    col("patient_dob"),
-    col("patient_age"),
-
-    col("visit_date"),
-    col("visit_year"),
-    col("visit_month"),
-    col("visit_day"),
-    col("visit_type"),
-    col("doctor_name"),
-    col("department"),
-
-    col("icd10_primary_code"),
-    col("icd10_primary_desc"),
-
-    col("procedures_icd9_codes"),
-    col("procedures_icd9_descs"),
-    col("drug_codes"),
-    col("drug_names"),
-    col("vitamin_names"),
-
-    col("total_procedure_cost"),
-    col("total_drug_cost"),
-    col("total_vitamin_cost"),
-    col("total_claim_amount"),
-
-    col("tindakan_validity_score"),
-    col("obat_validity_score"),
-    col("vitamin_relevance_score"),
-    col("biaya_anomaly_score"),
-    col("rule_violation_flag"),
-    col("rule_violation_reason"),
-
-    current_timestamp().alias("created_at")
+    "claim_id",
+    "patient_nik",
+    "patient_name",
+    "patient_gender",
+    "patient_dob",
+    "patient_age",
+    "visit_date",
+    "visit_day",
+    "visit_type",
+    "doctor_name",
+    "department",
+    "icd10_primary_code",
+    "icd10_primary_desc",
+    "procedures_icd9_codes",
+    "procedures_icd9_descs",
+    "drug_codes",
+    "drug_names",
+    "vitamin_names",
+    "total_procedure_cost",
+    "total_drug_cost",
+    "total_vitamin_cost",
+    "total_claim_amount",
+    "tindakan_validity_score",
+    "obat_validity_score",
+    "vitamin_relevance_score",
+    "biaya_anomaly_score",
+    "rule_violation_flag",
+    "rule_violation_reason",
+    current_timestamp().alias("created_at"),
+    "visit_year",
+    "visit_month"
 )
 
-print("Final feature DF ready.")
+print("Final DF ready.")
+
+feature_df.createOrReplaceTempView("feature_tmp")
 
 
 # ----------------------------------------------------------------------------------
-# 12. WRITE TO ICEBERG CURATED
+# 12. WRITE USING SQL (PALING STABIL DI CDP)
 # ----------------------------------------------------------------------------------
 
-feature_df.writeTo("iceberg_curated.claim_feature_set").overwritePartitions()
+spark.sql("""
+INSERT OVERWRITE TABLE iceberg_curated.claim_feature_set
+SELECT
+    claim_id,
+    patient_nik,
+    patient_name,
+    patient_gender,
+    patient_dob,
+    patient_age,
+    visit_date,
+    visit_day,
+    visit_type,
+    doctor_name,
+    department,
+    icd10_primary_code,
+    icd10_primary_desc,
+    procedures_icd9_codes,
+    procedures_icd9_descs,
+    drug_codes,
+    drug_names,
+    vitamin_names,
+    total_procedure_cost,
+    total_drug_cost,
+    total_vitamin_cost,
+    total_claim_amount,
+    tindakan_validity_score,
+    obat_validity_score,
+    vitamin_relevance_score,
+    biaya_anomaly_score,
+    rule_violation_flag,
+    rule_violation_reason,
+    created_at,
+    visit_year,
+    visit_month
+FROM feature_tmp
+""")
 
 print("=== ETL COMPLETED SUCCESSFULLY ===")
-
 spark.stop()
