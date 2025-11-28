@@ -3,11 +3,11 @@ from pyspark.sql import SparkSession
 spark = SparkSession.builder.getOrCreate()
 
 spark.sql("""
-DROP TABLE IF EXISTS hive_catalog.iceberg_curated.claim_feature_set
+DROP TABLE IF EXISTS iceberg_curated.claim_feature_set
 """)
 
 spark.sql("""
-CREATE TABLE hive_catalog.iceberg_curated.claim_feature_set (
+CREATE TABLE iceberg_curated.claim_feature_set (
     claim_id BIGINT,
     patient_nik STRING,
     patient_name STRING,
