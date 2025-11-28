@@ -18,7 +18,7 @@ print("=== LOAD FEATURE TABLE ===")
 
 df_spark = spark.sql("""
     SELECT *
-    FROM ice.iceberg_curated.claim_feature_set
+    FROM iceberg_curated.claim_feature_set
 """)
 
 df_spark.printSchema()
