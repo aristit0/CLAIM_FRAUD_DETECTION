@@ -18,8 +18,10 @@ print("=== START CLEAN RESET TABLE ===")
 # 2. DROP TABLE dari Hive Metastore
 # ===============================================================
 
+spark.sql("USE iceberg_curated")
+
 spark.sql("""
-DROP TABLE IF EXISTS iceberg_curated.claim_feature_set
+DROP TABLE IF EXISTS claim_feature_set PURGE
 """)
 
 print("[OK] Hive table dropped.")
