@@ -1,0 +1,5 @@
+{
+  "description": "Fraud detection model for claims",
+  "algorithm": "XGBoost",
+  "version": "v1"
+}
