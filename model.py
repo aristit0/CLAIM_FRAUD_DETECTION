@@ -2,64 +2,54 @@ import json
 import pickle
 import numpy as np
 import pandas as pd
+import cml.models_v1 as models
 
 MODEL_FILE = "model.pkl"
 PREPROCESS_FILE = "preprocess.pkl"
 META_FILE = "meta.json"
 
+# ======================================================
+# Load artifacts **ONCE ONLY** (WAJIB untuk CML Serving)
+# ======================================================
+with open(MODEL_FILE, "rb") as f:
+    model = pickle.load(f)
 
-# ==============================
-# Load artifacts sekali saja
-# ==============================
-def _load_artifacts():
-    with open(MODEL_FILE, "rb") as f:
-        model = pickle.load(f)
+with open(PREPROCESS_FILE, "rb") as f:
+    preprocess = pickle.load(f)
 
-    with open(PREPROCESS_FILE, "rb") as f:
-        preprocess = pickle.load(f)
-
-    numeric_cols = preprocess["numeric_cols"]
-    cat_cols = preprocess["cat_cols"]
-    encoders = preprocess["encoders"]
-    feature_names = preprocess["feature_names"]
-
-    return model, numeric_cols, cat_cols, encoders, feature_names
+numeric_cols = preprocess["numeric_cols"]
+cat_cols = preprocess["cat_cols"]
+encoders = preprocess["encoders"]
+feature_names = preprocess["feature_names"]
 
 
-model, numeric_cols, cat_cols, encoders, feature_names = _load_artifacts()
-
-
-# ==============================
-# Feature DF builder
-# ==============================
+# ======================================================
+# Build feature DF
+# ======================================================
 def _build_feature_df(records):
+
     df = pd.DataFrame.from_records(records)
 
-    # Pastikan semua kolom ada
+    # Ensure columns
     for c in numeric_cols + cat_cols:
         if c not in df.columns:
             df[c] = None
 
-    # Categorical encoding
+    # Encode categoricals
     for c in cat_cols:
         df[c] = df[c].astype(str).fillna("__MISSING__")
-        le = encoders[c]
 
-        # Jangan bikin set() tiap baris, cukup sekali di luar apply
+        le = encoders[c]
         known = set(le.classes_)
 
-        def _map_cat(v):
-            return v if v in known else "__MISSING__"
+        df[c] = df[c].apply(lambda v: v if v in known else "__MISSING__")
 
-        df[c] = df[c].apply(_map_cat)
-
-        # Pastikan token "__MISSING__" ada di encoder
         if "__MISSING__" not in known:
             le.classes_ = np.append(le.classes_, "__MISSING__")
 
         df[c] = le.transform(df[c])
 
-    # Numeric casting
+    # Numeric
     for c in numeric_cols:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
 
@@ -67,52 +57,50 @@ def _build_feature_df(records):
     return df, X
 
 
-# ==============================
-# Rules
-# ==============================
+# ======================================================
+# Rule Derivation
+# ======================================================
 def _derive_suspicious_sections(row):
-    sections = []
-    # row di sini Series, .get() masih aman
+    sec = []
     if row.get("tindakan_validity_score", 1) < 0.5:
-        sections.append("procedures")
+        sec.append("procedures")
     if row.get("obat_validity_score", 1) < 0.5:
-        sections.append("drug")
+        sec.append("drug")
     if row.get("vitamin_relevance_score", 1) < 0.5:
-        sections.append("vitamin")
+        sec.append("vitamin")
     if row.get("biaya_anomaly_score", 0) > 2.5:
-        sections.append("cost_anomaly")
-    return sections
+        sec.append("cost_anomaly")
+    return sec
 
 
-# ==============================
-# Feature importance
-# ==============================
+# ======================================================
+# Feature Importance
+# ======================================================
 def _build_feature_importance():
     try:
         imps = model.feature_importances_
-        pairs = list(zip(feature_names, imps))
-        pairs_sorted = sorted(pairs, key=lambda x: x[1], reverse=True)
-        return [
-            {"feature": name, "importance": float(imp)}
-            for name, imp in pairs_sorted
-        ]
-    except Exception:
+        pairs = sorted(zip(feature_names, imps), key=lambda x: x[1], reverse=True)
+        return [{"feature": n, "importance": float(v)} for (n, v) in pairs]
+    except:
         return []
-
 
 GLOBAL_FEATURE_IMPORTANCE = _build_feature_importance()
 
 
-# ==============================
-# Main predict() – dipanggil CML
-# ==============================
+# ======================================================
+# MAIN PREDICT — Decorated for Model Serving
+# ======================================================
+@models.cml_model
 def predict(data):
+    """
+    CML Model Serving automatically passes JSON → dict.
+    """
 
-    # Data bisa string (raw body) atau dict
+    # Accept string input (raw HTTP body)
     if isinstance(data, str):
         try:
             data = json.loads(data)
-        except Exception:
+        except:
             return {"error": "Invalid JSON string"}
 
     if not isinstance(data, dict):
@@ -124,14 +112,15 @@ def predict(data):
 
     try:
         df_raw, X = _build_feature_df(records)
+
         proba = model.predict_proba(X)[:, 1]
         preds = (proba >= 0.5).astype(int)
 
-        results = []
+        out = []
         for i, rec in enumerate(records):
             row = df_raw.iloc[i]
 
-            results.append({
+            out.append({
                 "claim_id": rec.get("claim_id"),
                 "fraud_score": float(proba[i]),
                 "suspicious_sections": _derive_suspicious_sections(row),
@@ -142,8 +131,7 @@ def predict(data):
                 "feature_importance": GLOBAL_FEATURE_IMPORTANCE
             })
 
-        return {"results": results}
+        return {"results": out}
 
     except Exception as e:
-        # Jangan raise, tapi kembalikan sebagai error JSON
         return {"error": str(e)}
