@@ -9,7 +9,7 @@ import pickle
 # Gunakan path absolut untuk Resources
 # ============================================
 
-BASE_PATH = "/app/model"
+BASE_PATH = "/home/cdsw/app/model"
 
 MODEL_FILE = f"{BASE_PATH}/model.pkl"
 PREPROCESS_FILE = f"{BASE_PATH}/preprocess.pkl"
