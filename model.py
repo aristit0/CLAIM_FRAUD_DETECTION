@@ -1,19 +1,17 @@
-import os
 import json
+import pickle
 import numpy as np
 import pandas as pd
-import pickle
-
-# ============================================
-# LOAD ARTIFACTS (MODEL, PREPROCESS)
-# ============================================
 
 MODEL_FILE = "model.pkl"
 PREPROCESS_FILE = "preprocess.pkl"
 META_FILE = "meta.json"
 
+
+# ==============================
+# Load artifacts sekali saja
+# ==============================
 def _load_artifacts():
-    """Load model + preprocess ONCE ONLY (CML Serving best practice)"""
     with open(MODEL_FILE, "rb") as f:
         model = pickle.load(f)
 
@@ -27,36 +25,41 @@ def _load_artifacts():
 
     return model, numeric_cols, cat_cols, encoders, feature_names
 
+
 model, numeric_cols, cat_cols, encoders, feature_names = _load_artifacts()
 
 
-# ============================================
-# FEATURE DF BUILDER
-# ============================================
+# ==============================
+# Feature DF builder
+# ==============================
 def _build_feature_df(records):
-
     df = pd.DataFrame.from_records(records)
 
-    # Ensure all feature columns exist
+    # Pastikan semua kolom ada
     for c in numeric_cols + cat_cols:
         if c not in df.columns:
             df[c] = None
 
-    # Encode categorical
+    # Categorical encoding
     for c in cat_cols:
         df[c] = df[c].astype(str).fillna("__MISSING__")
         le = encoders[c]
+
+        # Jangan bikin set() tiap baris, cukup sekali di luar apply
         known = set(le.classes_)
 
-        df[c] = df[c].apply(lambda v: v if v in known else "__MISSING__")
+        def _map_cat(v):
+            return v if v in known else "__MISSING__"
 
-        # ensure missing token exists
+        df[c] = df[c].apply(_map_cat)
+
+        # Pastikan token "__MISSING__" ada di encoder
         if "__MISSING__" not in known:
             le.classes_ = np.append(le.classes_, "__MISSING__")
 
         df[c] = le.transform(df[c])
 
-    # Numeric cast
+    # Numeric casting
     for c in numeric_cols:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
 
@@ -64,11 +67,12 @@ def _build_feature_df(records):
     return df, X
 
 
-# ============================================
-# SIMPLE RULES
-# ============================================
+# ==============================
+# Rules
+# ==============================
 def _derive_suspicious_sections(row):
     sections = []
+    # row di sini Series, .get() masih aman
     if row.get("tindakan_validity_score", 1) < 0.5:
         sections.append("procedures")
     if row.get("obat_validity_score", 1) < 0.5:
@@ -80,36 +84,35 @@ def _derive_suspicious_sections(row):
     return sections
 
 
-# ============================================
-# FEATURE IMPORTANCE
-# ============================================
+# ==============================
+# Feature importance
+# ==============================
 def _build_feature_importance():
     try:
         imps = model.feature_importances_
+        pairs = list(zip(feature_names, imps))
+        pairs_sorted = sorted(pairs, key=lambda x: x[1], reverse=True)
         return [
-            {"feature": n, "importance": float(v)}
-            for n, v in sorted(
-                zip(feature_names, imps),
-                key=lambda x: x[1],
-                reverse=True
-            )
+            {"feature": name, "importance": float(imp)}
+            for name, imp in pairs_sorted
         ]
-    except:
+    except Exception:
         return []
+
 
 GLOBAL_FEATURE_IMPORTANCE = _build_feature_importance()
 
 
-# ============================================
-# MAIN PREDICT
-# ============================================
+# ==============================
+# Main predict() – dipanggil CML
+# ==============================
 def predict(data):
 
-    # Accept string JSON
+    # Data bisa string (raw body) atau dict
     if isinstance(data, str):
         try:
             data = json.loads(data)
-        except:
+        except Exception:
             return {"error": "Invalid JSON string"}
 
     if not isinstance(data, dict):
@@ -125,7 +128,6 @@ def predict(data):
         preds = (proba >= 0.5).astype(int)
 
         results = []
-
         for i, rec in enumerate(records):
             row = df_raw.iloc[i]
 
@@ -143,4 +145,5 @@ def predict(data):
         return {"results": results}
 
     except Exception as e:
+        # Jangan raise, tapi kembalikan sebagai error JSON
         return {"error": str(e)}
