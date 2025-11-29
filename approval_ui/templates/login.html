@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Fraud Approval Login</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+
+    <style>
+        body {
+            background: radial-gradient(circle at center, #1f2937 0%, #111827 100%);
+        }
+    </style>
+</head>
+
+<body class="flex items-center justify-center h-screen">
+
+<div class="bg-gray-800 p-10 rounded-2xl shadow-xl w-96 border border-gray-700">
+    <h2 class="text-white text-3xl font-bold mb-6 text-center tracking-wide">
+        Fraud Approval System
+    </h2>
+
+    {% if error %}
+        <p class="text-red-400 text-center mb-4">{{ error }}</p>
+    {% endif %}
+
+    <form method="POST">
+        <label class="text-gray-300 font-semibold">Username</label>
+        <input name="username"
+               class="w-full p-3 rounded bg-gray-700 text-white mb-4 focus:ring-2 focus:ring-blue-500 outline-none">
+
+        <label class="text-gray-300 font-semibold">Password</label>
+        <input name="password" type="password"
+               class="w-full p-3 rounded bg-gray-700 text-white mb-6 focus:ring-2 focus:ring-blue-500 outline-none">
+
+        <button class="w-full bg-blue-500 p-3 rounded text-white font-semibold hover:bg-blue-600 transition">
+            Login
+        </button>
+    </form>
+</div>
+
+</body>
+</html>

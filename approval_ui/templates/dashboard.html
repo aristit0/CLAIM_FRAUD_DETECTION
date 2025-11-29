@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Fraud Approval Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+
+<body class="bg-gray-900 text-gray-200">
+
+<div class="p-6 border-b border-gray-700 mb-6 flex justify-between items-center">
+    <h1 class="text-3xl font-bold">Fraud Approval Dashboard</h1>
+    <a href="/logout" class="text-red-400 hover:underline">Logout</a>
+</div>
+
+<div class="max-w-5xl mx-auto">
+
+    <div class="bg-gray-800 p-6 rounded-xl shadow-lg mb-6">
+        <h2 class="text-xl mb-4 font-semibold text-blue-300">Cari Claim</h2>
+        
+        <div class="flex">
+            <input id="claim_id" class="flex-1 p-3 bg-gray-700 rounded text-white" placeholder="Masukkan Claim ID">
+            <button onclick="loadClaim()" class="ml-3 bg-green-500 px-4 py-2 rounded">Fetch</button>
+        </div>
+    </div>
+
+    <div id="result" class="hidden bg-gray-800 p-6 rounded-xl shadow-lg"></div>
+
+</div>
+
+
+<script>
+async function loadClaim() {
+    const claimId = document.getElementById("claim_id").value;
+
+    const resp = await fetch("/api/get_claim", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({claim_id: claimId})
+    });
+
+    const data = await resp.json();
+    renderResult(data);
+}
+
+function renderResult(d) {
+    let div = document.getElementById("result");
+    div.classList.remove("hidden");
+
+    div.innerHTML = `
+        <h2 class="text-2xl font-bold text-blue-300 mb-4">Claim #${d.claim_id}</h2>
+
+        <p class="mb-3"><span class="font-semibold">Fraud Score:</span> 
+            <span class="text-${d.model_output.fraud_score > 0.5 ? "red" : "green"}-400">
+                ${d.model_output.fraud_score.toFixed(3)}
+            </span>
+        </p>
+
+        <p class="mb-3"><span class="font-semibold">Rule Violations:</span> 
+            ${JSON.stringify(d.model_output.rule_violations)}
+        </p>
+
+        <p class="mb-3"><span class="font-semibold">Suspicious Sections:</span> 
+            ${JSON.stringify(d.model_output.suspicious_sections)}
+        </p>
+
+        <p class="mt-5 mb-3 text-yellow-300 font-semibold">AI Explanation:</p>
+        <p class="mb-6 whitespace-pre-line">${d.ai_explanation}</p>
+
+        <h3 class="text-xl font-semibold text-blue-300 mt-6 mb-3">Breakdown Biaya</h3>
+        <div class="grid grid-cols-3 gap-4 text-center">
+            <div class="bg-gray-700 p-3 rounded">Procedure<br>${d.features.total_procedure_cost}</div>
+            <div class="bg-gray-700 p-3 rounded">Drug<br>${d.features.total_drug_cost}</div>
+            <div class="bg-gray-700 p-3 rounded">Vitamin<br>${d.features.total_vitamin_cost}</div>
+        </div>
+
+        <div class="mt-8 flex space-x-4">
+            <button onclick="sendAction('approve')" class="bg-green-600 px-4 py-2 rounded">Approve</button>
+            <button onclick="sendAction('approve_partial')" class="bg-yellow-500 px-4 py-2 rounded">Approve Partial</button>
+            <button onclick="sendAction('decline')" class="bg-red-500 px-4 py-2 rounded">Decline</button>
+            <button onclick="sendAction('manual_review')" class="bg-blue-500 px-4 py-2 rounded">Manual Review</button>
+            <button onclick="sendAction('request_doc')" class="bg-purple-500 px-4 py-2 rounded">Request Additional Document</button>
+        </div>
+    `;
+}
+
+async function sendAction(actionType) {
+    const claimId = document.getElementById("claim_id").value;
+
+    const resp = await fetch("/api/action", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({action: actionType, claim_id: claimId})
+    });
+
+    const data = await resp.json();
+    alert("Action sent: " + data.message);
+}
+</script>
+
+</body>
+</html>
