@@ -330,25 +330,12 @@ feature_df = base.select(
     "total_drug_cost",
     "total_vitamin_cost",
     "total_claim_amount",
-
-    # === OLD RULE COLUMNS (EXISTING IN TABLE) ===
     "tindakan_validity_score",
     "obat_validity_score",
     "vitamin_relevance_score",
     "biaya_anomaly_score",
-
-    # === NEW FRAUD COLUMNS (ALREADY IN TABLE SCHEMA) ===
-    "severity_score",
-    "diagnosis_procedure_mismatch",
-    "drug_mismatch_score",
-    "cost_per_procedure",
-    "cost_procedure_anomaly",
-    "patient_claim_count",
-    "patient_frequency_risk",
-
     "rule_violation_flag",
     "rule_violation_reason",
-
     current_timestamp().alias("created_at")
 )
 
