@@ -2,7 +2,7 @@
 {% block content %}
 
 <div class="card p-4 shadow-sm">
-    <h4 class="mb-3">Submit Claim</h4>
+    <h4 class="mb-3">Submit Claim (UI v2)</h4>
 
     {% if msg %}
     <div class="alert alert-success">{{ msg }}</div>
@@ -10,6 +10,7 @@
 
     <form method="POST">
 
+        <h5>Data Pasien</h5>
         <div class="row">
             <div class="col-md-6 mb-3">
                 <label>Nama Pasien</label>
@@ -47,6 +48,10 @@
             <input class="form-control" name="patient_address">
         </div>
 
+        <hr>
+
+        <h5>Data Kunjungan</h5>
+
         <div class="row">
             <div class="col-md-6 mb-3">
                 <label>Tanggal Kunjungan</label>
@@ -55,10 +60,10 @@
 
             <div class="col-md-6 mb-3">
                 <label>Jenis Kunjungan</label>
-                <select class="form-control" name="visit_type" required>
-                    <option value="rawat jalan">Rawat Jalan</option>
-                    <option value="rawat inap">Rawat Inap</option>
-                    <option value="igd">IGD</option>
+                <select class="form-control" name="visit_type">
+                    <option>rawat jalan</option>
+                    <option>rawat inap</option>
+                    <option>igd</option>
                 </select>
             </div>
         </div>
@@ -74,44 +79,97 @@
                 <select class="form-control" name="department">
                     <option>Poli Umum</option>
                     <option>Poli Anak</option>
-                    <option>Poli Gigi</option>
+                    <option>Poli Saraf</option>
                     <option>IGD</option>
-                    <option>Kebidanan</option>
-                    <option>Bedah</option>
+                    <option>Poli Gigi</option>
                 </select>
             </div>
         </div>
 
         <hr>
 
+        <h5>Data Medis</h5>
+
         <div class="mb-3">
-            <label>Diagnosis (ICD-10)</label>
-            <input class="form-control" name="diagnosis" required>
+            <label>Diagnosis Utama (ICD-10)</label>
+            <select class="form-control" name="diagnosis_primary" required>
+                {% for code, desc in ICD10 %}
+                <option value="{{ code }}">{{ code }} - {{ desc }}</option>
+                {% endfor %}
+            </select>
         </div>
 
         <div class="mb-3">
-            <label>Procedure (ICD-9)</label>
-            <input class="form-control" name="procedure" required>
+            <label>Diagnosis Sekunder (Opsional)</label>
+            <select class="form-control" name="diagnosis_secondary">
+                <option value="">- Tidak Ada -</option>
+                {% for code, desc in ICD10 %}
+                <option value="{{ code }}">{{ code }} - {{ desc }}</option>
+                {% endfor %}
+            </select>
         </div>
 
         <div class="mb-3">
-            <label>Obat (Fornas)</label>
-            <input class="form-control" name="drug">
+            <label>Tindakan (ICD-9)</label>
+            <select class="form-control" name="procedure" required>
+                {% for code, desc in ICD9 %}
+                <option value="{{ code }}">{{ code }} - {{ desc }}</option>
+                {% endfor %}
+            </select>
         </div>
 
-        <div class="mb-3">
-            <label>Vitamin</label>
-            <input class="form-control" name="vitamin">
+        <hr>
+
+        <h5>Obat</h5>
+
+        <div class="row">
+            <div class="col-md-6 mb-3">
+                <label>Kode Obat</label>
+                <select class="form-control" name="drug_code">
+                    {% for code, name in DRUGS %}
+                    <option value="{{ code }}">{{ code }} - {{ name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="col-md-6 mb-3">
+                <label>Biaya Obat</label>
+                <input type="number" name="drug_cost" class="form-control" placeholder="0">
+            </div>
         </div>
 
+        <hr>
+
+        <h5>Vitamin</h5>
+
+        <div class="row">
+            <div class="col-md-6 mb-3">
+                <label>Vitamin</label>
+                <select class="form-control" name="vitamin_name">
+                    {% for v in VITAMINS %}
+                    <option>{{ v }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="col-md-6 mb-3">
+                <label>Biaya Vitamin</label>
+                <input type="number" name="vitamin_cost" class="form-control" placeholder="0">
+            </div>
+        </div>
+
+        <hr>
+
+        <h5>Biaya Tindakan</h5>
+
         <div class="mb-3">
-            <label>Total Biaya</label>
-            <input class="form-control" type="number" name="cost" required>
+            <label>Biaya Prosedur</label>
+            <input type="number" class="form-control" name="procedure_cost" required>
         </div>
 
         <button class="btn btn-primary w-100">Submit Claim</button>
-    </form>
 
+    </form>
 </div>
 
 {% endblock %}

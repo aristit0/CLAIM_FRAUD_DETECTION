@@ -11,8 +11,9 @@ app.permanent_session_lifetime = timedelta(hours=6)
 VALID_USER = "aris"
 VALID_PASS = "Admin123"
 
+
 # -----------------------------------
-# MySQL Connection
+# DB Connection
 # -----------------------------------
 def get_db():
     return mysql.connector.connect(
@@ -21,21 +22,6 @@ def get_db():
         password="T1ku$H1t4m",
         database="claimdb"
     )
-
-# -----------------------------------
-# Rupiah Formatting
-# -----------------------------------
-def format_rupiah(x):
-    try:
-        x = float(x)
-        formatted = f"Rp {x:,.2f}"
-        formatted = formatted.replace(",", "#").replace(".", ",").replace("#", ".")
-        return formatted
-    except:
-        return x
-
-# Register filter for Jinja
-app.jinja_env.filters["rupiah"] = format_rupiah
 
 
 # -----------------------------------
@@ -61,15 +47,48 @@ def login_required(f):
 
 
 # -----------------------------------
-# SUBMIT CLAIM PAGE
+# SUBMISSION FORM V2
 # -----------------------------------
 @app.route("/submit", methods=["GET", "POST"])
 @login_required
 def submit_claim():
 
+    # === MASTER DATA (dropdowns) ===
+    ICD10 = [
+        ("A09", "Diare dan gastroenteritis"),
+        ("J06", "Common cold"),
+        ("I10", "Hipertensi"),
+        ("E11", "Diabetes mellitus tipe 2"),
+        ("J45", "Asma"),
+        ("K29", "Gastritis"),
+    ]
+
+    ICD9 = [
+        ("96.70", "Injeksi obat"),
+        ("99.04", "Transfusi darah"),
+        ("03.31", "Pemeriksaan darah"),
+        ("45.13", "Endoskopi"),
+        ("93.90", "Electrotherapy"),
+    ]
+
+    DRUGS = [
+        ("KFA001", "Paracetamol 500 mg"),
+        ("KFA002", "Amoxicillin 500 mg"),
+        ("KFA003", "Ceftriaxone injeksi"),
+        ("KFA004", "Omeprazole 20 mg"),
+        ("KFA005", "ORS / Oralit"),
+    ]
+
+    VITAMINS = [
+        "Vitamin C 500 mg",
+        "Vitamin B Complex",
+        "Vitamin D 1000 IU",
+        "Vitamin E 400 IU",
+    ]
+
     if request.method == "POST":
 
-        # Patient info
+        # PATIENT INFO
         patient_name = request.form.get("patient_name")
         patient_nik = request.form.get("patient_nik")
         patient_dob = request.form.get("patient_dob")
@@ -77,78 +96,103 @@ def submit_claim():
         patient_phone = request.form.get("patient_phone")
         patient_address = request.form.get("patient_address")
 
-        # Visit info
+        # VISIT INFO
         visit_date = request.form.get("visit_date")
         visit_type = request.form.get("visit_type")
         doctor_name = request.form.get("doctor_name")
         department = request.form.get("department")
 
-        # Core claim
-        diagnosis_raw = request.form.get("diagnosis")
-        procedure_raw = request.form.get("procedure")
-        drug = request.form.get("drug")
-        vitamin = request.form.get("vitamin")
-        cost = request.form.get("cost")
+        # MEDICAL DETAILS
+        dx_primary = request.form.get("diagnosis_primary")
+        dx_primary_desc = dict(ICD10)[dx_primary]
 
-        # Extract ICD code
-        diagnosis_code = diagnosis_raw.split(" ")[0]
-        procedure_code = procedure_raw.split(" ")[0]
+        dx_secondary = request.form.get("diagnosis_secondary")
+        dx_secondary_desc = dict(ICD10)[dx_secondary] if dx_secondary else None
 
+        px_code = request.form.get("procedure")
+        px_desc = dict(ICD9)[px_code]
+
+        drug_code = request.form.get("drug_code")
+        drug_name = dict(DRUGS)[drug_code]
+        drug_cost = float(request.form.get("drug_cost") or 0)
+
+        vitamin_name = request.form.get("vitamin_name")
+        vitamin_cost = float(request.form.get("vitamin_cost") or 0)
+
+        # COSTS
+        proc_cost = float(request.form.get("procedure_cost") or 0)
+        total_claim = proc_cost + drug_cost + vitamin_cost
+
+        # DB
         db = get_db()
         cursor = db.cursor()
 
-        # Insert claim_header
+        # INSERT CLAIM HEADER
         cursor.execute("""
-            INSERT INTO claim_header 
-            (patient_nik, patient_name, patient_gender, patient_dob, patient_address, patient_phone,
-             visit_date, visit_type, doctor_name, department,
-             total_procedure_cost, total_drug_cost, total_vitamin_cost, total_claim_amount, status)
+            INSERT INTO claim_header (
+                patient_nik, patient_name, patient_gender, patient_dob,
+                patient_address, patient_phone,
+                visit_date, visit_type, doctor_name, department,
+                total_procedure_cost, total_drug_cost, total_vitamin_cost, total_claim_amount, status
+            )
             VALUES (%s,%s,%s,%s,%s,%s,
                     %s,%s,%s,%s,
-                    %s,0,0,%s,'pending')
-        """, (patient_nik, patient_name, patient_gender, patient_dob, patient_address, patient_phone,
-              visit_date, visit_type, doctor_name, department,
-              cost, cost))
+                    %s,%s,%s,%s,'pending')
+        """, (
+            patient_nik, patient_name, patient_gender, patient_dob,
+            patient_address, patient_phone,
+            visit_date, visit_type, doctor_name, department,
+            proc_cost, drug_cost, vitamin_cost, total_claim
+        ))
 
         db.commit()
         claim_id = cursor.lastrowid
 
-        # Insert ICD-10 primary diagnosis
+        # INSERT PRIMARY DX
         cursor.execute("""
             INSERT INTO claim_diagnosis (claim_id, icd10_code, icd10_description, is_primary)
             VALUES (%s,%s,%s,1)
-        """, (claim_id, diagnosis_code, diagnosis_raw))
+        """, (claim_id, dx_primary, dx_primary_desc))
 
-        # Insert ICD-9 procedure
+        # INSERT SECONDARY DX (optional)
+        if dx_secondary:
+            cursor.execute("""
+                INSERT INTO claim_diagnosis (claim_id, icd10_code, icd10_description, is_primary)
+                VALUES (%s,%s,%s,0)
+            """, (claim_id, dx_secondary, dx_secondary_desc))
+
+        # INSERT PROCEDURE
         cursor.execute("""
             INSERT INTO claim_procedure (claim_id, icd9_code, icd9_description, quantity, procedure_date)
             VALUES (%s,%s,%s,1,%s)
-        """, (claim_id, procedure_code, procedure_raw, visit_date))
+        """, (claim_id, px_code, px_desc, visit_date))
 
-        # Insert drug
+        # INSERT DRUG
         cursor.execute("""
             INSERT INTO claim_drug (claim_id, drug_code, drug_name, dosage, frequency, route, days, cost)
-            VALUES (%s,'-',%s,'1 tablet','2x sehari','oral',1,0)
-        """, (claim_id, drug))
+            VALUES (%s,%s,%s,'1 tablet','2x sehari','oral',1,%s)
+        """, (claim_id, drug_code, drug_name, drug_cost))
 
-        # Insert vitamin
+        # INSERT VITAMIN
         cursor.execute("""
             INSERT INTO claim_vitamin (claim_id, vitamin_name, dosage, days, cost)
-            VALUES (%s,%s,'1 tablet',1,0)
-        """, (claim_id, vitamin))
+            VALUES (%s,%s,'1 tablet',1,%s)
+        """, (claim_id, vitamin_name, vitamin_cost))
 
         db.commit()
         cursor.close()
         db.close()
 
-        return render_template("submit_claim.html", msg="Claim berhasil disubmit!")
+        return render_template("submit_claim.html",
+                               msg="Claim berhasil disubmit!",
+                               ICD10=ICD10, ICD9=ICD9, DRUGS=DRUGS, VITAMINS=VITAMINS)
 
-    return render_template("submit_claim.html")
-
+    return render_template("submit_claim.html",
+                           ICD10=ICD10, ICD9=ICD9, DRUGS=DRUGS, VITAMINS=VITAMINS)
 
 
 # -----------------------------------
-# LIST CLAIMS + PAGINATION
+# LIST CLAIMS
 # -----------------------------------
 @app.route("/list")
 @login_required
@@ -161,12 +205,10 @@ def list_claims():
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
-    # Count total rows
     cursor.execute("SELECT COUNT(*) AS total FROM claim_header")
     total = cursor.fetchone()["total"]
     total_pages = math.ceil(total / limit)
 
-    # Fetch paginated rows
     cursor.execute(f"""
         SELECT claim_id, patient_name, patient_nik, total_claim_amount, status, created_at
         FROM claim_header
