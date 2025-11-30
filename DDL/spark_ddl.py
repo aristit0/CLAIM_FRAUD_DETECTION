@@ -17,7 +17,6 @@ print("=== START CLEAN RESET TABLE ===")
 # ===============================================================
 # 2. DROP TABLE dari Hive Metastore
 # ===============================================================
-
 spark.sql("USE iceberg_curated")
 
 spark.sql("""
@@ -28,9 +27,7 @@ print("[OK] Hive table dropped.")
 
 # ===============================================================
 # 3. DELETE HDFS TABLE DIRECTORY (WAJIB)
-#    (hapus folder lama untuk hilangkan schema lama di datafile lama)
 # ===============================================================
-
 hdfs_path = "/warehouse/tablespace/external/hive/iceberg_curated.db/claim_feature_set"
 
 try:
@@ -40,17 +37,19 @@ except Exception as e:
     print(f"[WARN] Failed to delete HDFS directory: {e}")
 
 # ===============================================================
-# 4. RECREATE ICEBERG TABLE V2 (BERSIH)
+# 4. RECREATE ICEBERG TABLE V2 (FINAL SCHEMA)
 # ===============================================================
 
 spark.sql("""
 CREATE TABLE iceberg_curated.claim_feature_set (
+
     claim_id BIGINT,
     patient_nik STRING,
     patient_name STRING,
     patient_gender STRING,
     patient_dob DATE,
     patient_age INT,
+
     visit_date DATE,
     visit_year INT,
     visit_month INT,
@@ -64,7 +63,6 @@ CREATE TABLE iceberg_curated.claim_feature_set (
 
     procedures_icd9_codes ARRAY<STRING>,
     procedures_icd9_descs ARRAY<STRING>,
-
     drug_codes ARRAY<STRING>,
     drug_names ARRAY<STRING>,
     vitamin_names ARRAY<STRING>,
@@ -74,12 +72,24 @@ CREATE TABLE iceberg_curated.claim_feature_set (
     total_vitamin_cost DOUBLE,
     total_claim_amount DOUBLE,
 
-    -- 3 dummy columns (legacy) REQUIRED BY BACKEND MODEL ENGINE
+    -------------------------------------------------------------
+    --  LEGACY REQUIRED BY BACKEND MODEL
+    -------------------------------------------------------------
     tindakan_validity_score DOUBLE,
     obat_validity_score DOUBLE,
     vitamin_relevance_score DOUBLE,
 
-    -- === NEW FRAUD RULES (MATCH EXACTLY ETL SCRIPT) ===
+    -------------------------------------------------------------
+    -- NEW CLINICAL COMPATIBILITY SCORES (BARU)
+    -------------------------------------------------------------
+    diagnosis_procedure_score DOUBLE,
+    diagnosis_drug_score DOUBLE,
+    diagnosis_vitamin_score DOUBLE,
+    treatment_consistency_score DOUBLE,
+
+    -------------------------------------------------------------
+    -- RULE-BASED FEATURES
+    -------------------------------------------------------------
     severity_score INT,
     diagnosis_procedure_mismatch INT,
     drug_mismatch_score INT,
@@ -88,10 +98,11 @@ CREATE TABLE iceberg_curated.claim_feature_set (
     patient_claim_count INT,
     patient_frequency_risk INT,
 
-    -- Z-score anomaly
     biaya_anomaly_score DOUBLE,
 
-    -- Final risk
+    -------------------------------------------------------------
+    -- FINAL RISK
+    -------------------------------------------------------------
     rule_violation_flag INT,
     rule_violation_reason STRING,
 
@@ -104,13 +115,10 @@ TBLPROPERTIES ('format-version'='2');
 
 print("[OK] Iceberg v2 table created.")
 
-
 # ===============================================================
-# 5. Print schema untuk memastikan semuanya clean & INT
+# 5. Print schema untuk memastikan semuanya clean
 # ===============================================================
-
 spark.table("iceberg_curated.claim_feature_set").printSchema()
 
 print("=== CLEAN RESET COMPLETED ===")
-
 spark.stop()

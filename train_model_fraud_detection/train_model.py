@@ -10,10 +10,11 @@ from sklearn.metrics import (
 )
 from category_encoders.target_encoder import TargetEncoder
 import xgboost as xgb
-import shap
 import os, json, pickle
 
-
+# =====================================================
+# 1. CONNECT TO SPARK & LOAD FEATURE TABLE
+# =====================================================
 print("=== CONNECTING TO SPARK ===")
 CONNECTION_NAME = "CDP-MSI"
 conn = cmldata.get_connection(CONNECTION_NAME)
@@ -21,84 +22,98 @@ spark = conn.get_spark_session()
 
 df_spark = spark.sql("SELECT * FROM iceberg_curated.claim_feature_set")
 df = df_spark.toPandas()
-print("Loaded:", df.shape)
-
+print("Loaded feature_set:", df.shape)
 
 # =====================================================
-# LABEL COLUMN
+# 2. LABEL COLUMN
 # =====================================================
 label_col = "rule_violation_flag"
 df[label_col] = df[label_col].fillna(0).astype(int)
 
+# =====================================================
+# 3. FEATURE SELECTION
+# =====================================================
 
-# =====================================================
-# FEATURES
-# =====================================================
+# PURE NUMERIC FEATURES
 numeric_cols = [
     "patient_age",
     "total_procedure_cost",
     "total_drug_cost",
     "total_vitamin_cost",
     "total_claim_amount",
+
     "severity_score",
+    "cost_per_procedure",
+    "patient_claim_count",
+    "biaya_anomaly_score",
+
+    "visit_year",
+    "visit_month",
+    "visit_day",
+
+    # Clinical compatibility scores (BARU)
+    "diagnosis_procedure_score",
+    "diagnosis_drug_score",
+    "diagnosis_vitamin_score",
+    "treatment_consistency_score",
+
+    # Old rule flags (tetap ikut, bisa penting)
     "diagnosis_procedure_mismatch",
     "drug_mismatch_score",
-    "cost_per_procedure",
     "cost_procedure_anomaly",
-    "patient_claim_count",
     "patient_frequency_risk",
-    "biaya_anomaly_score",
-    "visit_year", "visit_month", "visit_day"
 ]
 
-categorical_cols = ["visit_type", "department", "icd10_primary_code"]
+# CATEGORICAL FEATURES
+categorical_cols = [
+    "visit_type",
+    "department",
+    "icd10_primary_code",
+]
 
-# EXTRA — count of each section
-df["procedure_count"] = df["procedures_icd9_codes"].apply(lambda x: len(x) if isinstance(x, list) else 0)
-df["drug_count"] = df["drug_names"].apply(lambda x: len(x) if isinstance(x, list) else 0)
-df["vitamin_count"] = df["vitamin_names"].apply(lambda x: len(x) if isinstance(x, list) else 0)
-
-numeric_cols += ["procedure_count", "drug_count", "vitamin_count"]
-
+print("NUMERIC COLS:", numeric_cols)
+print("CAT COLS    :", categorical_cols)
 
 # =====================================================
-# TARGET ENCODING CATEGORICAL
+# 4. PREPROCESSING (TARGET ENCODING UNTUK CATEGORICAL)
 # =====================================================
-print("=== TARGET ENCODING ===")
+print("=== TARGET ENCODING CATEGORICAL FEATURES ===")
+
 encoders = {}
-
 for c in categorical_cols:
     te = TargetEncoder(cols=[c], smoothing=0.3)
     df[c] = df[c].fillna("__MISSING__").astype(str)
     df[c] = te.fit_transform(df[c], df[label_col])
     encoders[c] = te
 
-
-# Fill numeric
+# Isi numeric NaN
 for c in numeric_cols:
     df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
 
 X = df[numeric_cols + categorical_cols]
 y = df[label_col]
 
-print("Final feature matrix:", X.shape)
-
+print("Final feature matrix:", X.shape, "Labels:", y.shape)
 
 # =====================================================
-# TRAIN/TEST SPLIT
+# 5. TRAIN / TEST SPLIT
 # =====================================================
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, stratify=y
+    X, y,
+    test_size=0.2,
+    random_state=42,
+    stratify=y
 )
 
 positive = (y_train == 1).sum()
 negative = (y_train == 0).sum()
-scale_pos_weight = negative / positive
-print("Fraud:", positive, " Normal:", negative)
+scale_pos_weight = negative / positive if positive > 0 else 1.0
 
+print("Fraud (1):", positive, " Normal (0):", negative)
+print("scale_pos_weight:", scale_pos_weight)
 
 # =====================================================
-# XGBOOST — BEST SETTINGS (TUNED)
+# 6. XGBOOST MODEL (FRAUD-ORIENTED)
 # =====================================================
 model = xgb.XGBClassifier(
     n_estimators=600,
@@ -113,7 +128,7 @@ model = xgb.XGBClassifier(
     objective="binary:logistic",
     eval_metric="auc",
     scale_pos_weight=scale_pos_weight,
-    tree_method="hist"
+    tree_method="hist",
 )
 
 print("=== TRAINING MODEL ===")
@@ -124,97 +139,107 @@ model.fit(
     verbose=50
 )
 
-
 # =====================================================
-# OPTIMAL THRESHOLD
+# 7. THRESHOLD OPTIMIZATION (F1 MAX)
 # =====================================================
+print("=== THRESHOLD OPTIMIZATION ===")
 y_proba = model.predict_proba(X_test)[:, 1]
 
 thresholds = np.arange(0.1, 0.9, 0.02)
-best_f1 = 0
+best_f1 = 0.0
 best_t = 0.5
 
 for t in thresholds:
-    f1 = f1_score(y_test, (y_proba >= t).astype(int))
+    pred = (y_proba >= t).astype(int)
+    f1 = f1_score(y_test, pred)
     if f1 > best_f1:
         best_f1 = f1
         best_t = t
 
 print("Best threshold:", best_t, "F1:", best_f1)
 
-
 # =====================================================
-# FINAL EVALUATION
+# 8. FINAL EVALUATION
 # =====================================================
 y_pred = (y_proba >= best_t).astype(int)
 
-auc = roc_auc_score(y_test, y_proba)
-f1 = f1_score(y_test, y_pred)
-prec = precision_score(y_test, y_pred)
-rec = recall_score(y_test, y_pred)
+auc  = roc_auc_score(y_test, y_proba)
+f1   = f1_score(y_test, y_pred)
+prec = precision_score(y_test, y_pred, zero_division=0)
+rec  = recall_score(y_test, y_pred, zero_division=0)
 
-print("\n=== FINAL PERFORMANCE ===")
-print("AUC:", auc)
-print("F1 :", f1)
-print("Precision:", prec)
-print("Recall:", rec)
-print(classification_report(y_test, y_pred))
-
+print("\n=== FINAL PERFORMANCE @ THRESHOLD {:.2f} ===".format(best_t))
+print("AUC       :", auc)
+print("F1        :", f1)
+print("Precision :", prec)
+print("Recall    :", rec)
+print("\n=== CLASSIFICATION REPORT ===")
+print(classification_report(y_test, y_pred, zero_division=0))
 
 # =====================================================
-# SHAP SAFE MODE (XGBoost 2.x compatible)
+# 9. FEATURE IMPORTANCE (SIMPLE, TANPA SHAP)
 # =====================================================
-print("=== SHAP (KernelExplainer SAFE for XGBoost 2.x) ===")
-
-sample_size = min(30, len(X_train))
-background = X_train.sample(sample_size, random_state=42)
-target_sample = X_train.sample(sample_size, random_state=10)
-
-import shap
-import numpy as np
-
-# Wrap model.predict_proba so SHAP doesn't touch sklearn model
-def model_predict(data):
-    data = np.array(data)
-    return model.predict_proba(data)[:, 1]
-
-# KernelExplainer using safe wrapper
-explainer = shap.KernelExplainer(model_predict, background.values)
-
-shap_values = explainer.shap_values(target_sample.values, nsamples=100)
-
-# calculate feature importance
-feature_scores = dict(
-    sorted(
-        zip(X.columns, np.abs(shap_values).mean(axis=0)),
-        key=lambda kv: kv[1],
-        reverse=True
+print("=== FEATURE IMPORTANCE (XGBoost GAIN) ===")
+try:
+    importances = model.feature_importances_
+    feature_scores = dict(
+        sorted(
+            zip(X.columns, importances),
+            key=lambda kv: kv[1],
+            reverse=True
+        )
     )
-)
-
-print("=== SHAP TOP FEATURES ===")
-for k, v in list(feature_scores.items())[:10]:
-    print(f"{k}: {v}")
+    for k, v in list(feature_scores.items())[:20]:
+        print(f"{k}: {v}")
+except Exception as e:
+    print("Cannot compute feature_importances_:", str(e))
+    feature_scores = {}
 
 # =====================================================
-# SAVE ARTIFACTS
+# 10. SAVE ARTIFACTS (MODEL + PREPROCESS + META)
 # =====================================================
 ROOT = "/home/cdsw"
+os.makedirs(ROOT, exist_ok=True)
 
+print("\n=== SAVING MODEL & PREPROCESS ARTIFACTS TO", ROOT, "===")
+
+# 1. Model
 with open(os.path.join(ROOT, "model.pkl"), "wb") as f:
     pickle.dump(model, f)
 
+# 2. Preprocess
 with open(os.path.join(ROOT, "preprocess.pkl"), "wb") as f:
     pickle.dump(
         {
             "numeric_cols": numeric_cols,
             "categorical_cols": categorical_cols,
             "encoders": encoders,
-            "best_threshold": best_t,
-            "feature_importance": feature_scores
+            "best_threshold": float(best_t),
+            "feature_importance": feature_scores,
+            "label_col": label_col,
         },
         f
     )
 
-print("\n=== DONE — Model + Preprocess Saved ===")
+# 3. Metadata
+with open(os.path.join(ROOT, "meta.json"), "w") as f:
+    json.dump(
+        {
+            "description": "Fraud detection model v3 (clinical compatibility + cost/frequency)",
+            "version": "v3",
+            "algorithm": "XGBoost",
+            "features_used": numeric_cols + categorical_cols,
+            "performance": {
+                "auc": float(auc),
+                "f1": float(f1),
+                "precision": float(prec),
+                "recall": float(rec),
+                "best_threshold": float(best_t),
+            },
+        },
+        f,
+        indent=2
+    )
+
+print("=== TRAINING COMPLETE. ARTIFACTS SAVED. ===")
 spark.stop()
