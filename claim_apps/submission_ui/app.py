@@ -36,6 +36,20 @@ def login():
         return render_template("login.html", error="Invalid credentials")
     return render_template("login.html")
 
+# -----------------------------------
+# Rupiah Formatting
+# -----------------------------------
+def format_rupiah(x):
+    try:
+        x = float(x)
+        formatted = f"Rp {x:,.2f}"
+        formatted = formatted.replace(",", "#").replace(".", ",").replace("#", ".")
+        return formatted
+    except:
+        return x
+
+# Register filter
+app.jinja_env.filters["rupiah"] = format_rupiah
 
 def login_required(f):
     def wrapper(*args, **kwargs):

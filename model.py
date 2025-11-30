@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import json
 import pickle
 import numpy as np
@@ -9,7 +10,7 @@ PREPROCESS_FILE = "preprocess.pkl"
 META_FILE = "meta.json"
 
 # ======================================================
-# Load artifacts **ONCE ONLY** (WAJIB untuk CML Serving)
+# LOAD ARTIFACTS ONCE (WAJIB)
 # ======================================================
 with open(MODEL_FILE, "rb") as f:
     model = pickle.load(f)
@@ -18,85 +19,85 @@ with open(PREPROCESS_FILE, "rb") as f:
     preprocess = pickle.load(f)
 
 numeric_cols = preprocess["numeric_cols"]
-cat_cols = preprocess["cat_cols"]
+categorical_cols = preprocess["categorical_cols"]
 encoders = preprocess["encoders"]
-feature_names = preprocess["feature_names"]
+best_threshold = preprocess.get("best_threshold", 0.5)
+
+# Feature names = numerik + encoded categoricals
+feature_names = numeric_cols + categorical_cols
 
 
 # ======================================================
-# Build feature DF
+# HANDLE FEATURE DF FOR INFERENCE
 # ======================================================
 def _build_feature_df(records):
-
     df = pd.DataFrame.from_records(records)
 
-    # Ensure columns
-    for c in numeric_cols + cat_cols:
+    # ensure all columns exist
+    for c in numeric_cols + categorical_cols:
         if c not in df.columns:
             df[c] = None
 
-    # Encode categoricals
-    for c in cat_cols:
+    # categorical via TargetEncoder (safe)
+    for c in categorical_cols:
         df[c] = df[c].astype(str).fillna("__MISSING__")
 
-        le = encoders[c]
-        known = set(le.classes_)
+        te = encoders[c]
+        # transform menggunakan encoder fit dari training
+        df[c] = te.transform(df[[c]])
 
-        df[c] = df[c].apply(lambda v: v if v in known else "__MISSING__")
-
-        if "__MISSING__" not in known:
-            le.classes_ = np.append(le.classes_, "__MISSING__")
-
-        df[c] = le.transform(df[c])
-
-    # Numeric
+    # numeric safe conversion
     for c in numeric_cols:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
 
-    X = df[numeric_cols + cat_cols]
+    X = df[numeric_cols + categorical_cols]
     return df, X
 
 
 # ======================================================
-# Rule Derivation
+# RULE-BASED CHECK
 # ======================================================
 def _derive_suspicious_sections(row):
     sec = []
-    if row.get("tindakan_validity_score", 1) < 0.5:
-        sec.append("procedures")
-    if row.get("obat_validity_score", 1) < 0.5:
-        sec.append("drug")
-    if row.get("vitamin_relevance_score", 1) < 0.5:
-        sec.append("vitamin")
-    if row.get("biaya_anomaly_score", 0) > 2.5:
-        sec.append("cost_anomaly")
+
+    if row.get("diagnosis_procedure_mismatch", 0) == 1:
+        sec.append("diagnosis-procedure mismatch")
+
+    if row.get("drug_mismatch_score", 0) == 1:
+        sec.append("drug inconsistency")
+
+    if row.get("cost_procedure_anomaly", 0) == 1:
+        sec.append("procedure cost anomaly")
+
+    if row.get("patient_frequency_risk", 0) == 1:
+        sec.append("patient high claim frequency")
+
+    if row.get("biaya_anomaly_score", 0) >= 2.5:
+        sec.append("cost z-score anomaly")
+
     return sec
 
 
 # ======================================================
-# Feature Importance
+# FEATURE IMPORTANCE (GLOBAL)
 # ======================================================
-def _build_feature_importance():
+def _extract_feature_importance():
     try:
         imps = model.feature_importances_
         pairs = sorted(zip(feature_names, imps), key=lambda x: x[1], reverse=True)
-        return [{"feature": n, "importance": float(v)} for (n, v) in pairs]
+        return [{"feature": f, "importance": float(v)} for f, v in pairs]
     except:
         return []
 
-GLOBAL_FEATURE_IMPORTANCE = _build_feature_importance()
+GLOBAL_FEATURE_IMPORTANCE = _extract_feature_importance()
 
 
 # ======================================================
-# MAIN PREDICT — Decorated for Model Serving
+# MAIN PREDICT (CML SERVING)
 # ======================================================
 @models.cml_model
 def predict(data):
-    """
-    CML Model Serving automatically passes JSON → dict.
-    """
 
-    # Accept string input (raw HTTP body)
     if isinstance(data, str):
         try:
             data = json.loads(data)
@@ -108,30 +109,40 @@ def predict(data):
 
     records = data.get("records")
     if not isinstance(records, list) or len(records) == 0:
-        return {"error": "'records' must be non-empty list"}
+        return {"error": "'records' must be a non-empty list"}
 
     try:
         df_raw, X = _build_feature_df(records)
 
-        proba = model.predict_proba(X)[:, 1]
-        preds = (proba >= 0.5).astype(int)
+        # model outputs
+        probs = model.predict_proba(X)[:, 1]
+        preds = (probs >= best_threshold).astype(int)
 
-        out = []
+        results = []
+
         for i, rec in enumerate(records):
-            row = df_raw.iloc[i]
 
-            out.append({
+            row = df_raw.iloc[i]
+            suspicious = _derive_suspicious_sections(row)
+
+            rule_flag = rec.get("rule_violation_flag")
+            rule_reason = rec.get("rule_violation_reason")
+
+            # combine ML + rule
+            final_flag = rule_flag if rule_flag is not None else int(preds[i])
+
+            results.append({
                 "claim_id": rec.get("claim_id"),
-                "fraud_score": float(proba[i]),
-                "suspicious_sections": _derive_suspicious_sections(row),
-                "rule_violations": {
-                    "flag": int(rec.get("rule_violation_flag", preds[i])),
-                    "reason": rec.get("rule_violation_reason")
-                },
+                "fraud_score": float(probs[i]),
+                "predicted_flag": int(preds[i]),
+                "final_flag": final_flag,
+                "rule_flag": rule_flag,
+                "rule_reason": rule_reason,
+                "suspicious_sections": suspicious,
                 "feature_importance": GLOBAL_FEATURE_IMPORTANCE
             })
 
-        return {"results": out}
+        return {"results": results}
 
     except Exception as e:
         return {"error": str(e)}
