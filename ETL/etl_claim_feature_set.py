@@ -1,8 +1,8 @@
+#!/usr/bin/env python3
 import cml.data_v1 as cmldata
 from pyspark.sql.functions import (
-    col, lit, when, collect_list, first, year, month, dayofmonth,
-    avg, stddev_pop, count, size, array_contains, substring,
-    current_timestamp, lower, concat_ws,
+    col, lit, when, collect_list, first, year, month, dayofmonth, avg, stddev_pop,
+    count, size, substring, current_timestamp, concat_ws,
     abs as spark_abs
 )
 from pyspark.sql.window import Window
@@ -15,10 +15,10 @@ CONNECTION_NAME = "CDP-MSI"
 conn = cmldata.get_connection(CONNECTION_NAME)
 spark = conn.get_spark_session()
 
-print("=== START FRAUD-ENHANCED ETL (RULE-BASED) ===")
+print("=== START FRAUD-ENHANCED ETL ===")
 
 # ================================================================
-# 2. LOAD RAW TABLES (ICEBERG RAW)
+# 2. LOAD RAW TABLES
 # ================================================================
 hdr  = spark.sql("SELECT * FROM iceberg_raw.claim_header_raw")
 diag = spark.sql("SELECT * FROM iceberg_raw.claim_diagnosis_raw")
@@ -29,7 +29,7 @@ vit  = spark.sql("SELECT * FROM iceberg_raw.claim_vitamin_raw")
 print("Loaded raw tables.")
 
 # ================================================================
-# 3. PRIMARY DIAGNOSIS (ICD-10 UTAMA)
+# 3. PRIMARY DIAG
 # ================================================================
 diag_primary = (
     diag.where(col("is_primary") == 1)
@@ -41,350 +41,235 @@ diag_primary = (
 )
 
 # ================================================================
-# 4. AGGREGATIONS: PROCEDURE, DRUG, VITAMIN
+# 4. AGGREGATE ICD9 / DRUG / VITAMIN
 # ================================================================
-proc_agg = (
-    proc.groupBy("claim_id")
-        .agg(
-            collect_list("icd9_code").alias("procedures_icd9_codes"),
-            collect_list("icd9_description").alias("procedures_icd9_descs")
-        )
+proc_agg = proc.groupBy("claim_id").agg(
+    collect_list("icd9_code").alias("procedures_icd9_codes"),
+    collect_list("icd9_description").alias("procedures_icd9_descs")
 )
 
-drug_agg = (
-    drug.groupBy("claim_id")
-        .agg(
-            collect_list("drug_code").alias("drug_codes"),
-            collect_list("drug_name").alias("drug_names")
-        )
+drug_agg = drug.groupBy("claim_id").agg(
+    collect_list("drug_code").alias("drug_codes"),
+    collect_list("drug_name").alias("drug_names")
 )
 
-vit_agg = (
-    vit.groupBy("claim_id")
-        .agg(
-            collect_list("vitamin_name").alias("vitamin_names")
-        )
+vit_agg = vit.groupBy("claim_id").agg(
+    collect_list("vitamin_name").alias("vitamin_names")
 )
 
 # ================================================================
-# 5. JOIN ALL FEATURES KE HEADER
+# 5. JOIN ALL
 # ================================================================
 base = (
     hdr.alias("h")
-        .join(diag_primary.alias("d"), "claim_id", "left")
-        .join(proc_agg.alias("p"), "claim_id", "left")
-        .join(drug_agg.alias("dr"), "claim_id", "left")
-        .join(vit_agg.alias("v"), "claim_id", "left")
+       .join(diag_primary, "claim_id", "left")
+       .join(proc_agg, "claim_id", "left")
+       .join(drug_agg, "claim_id", "left")
+       .join(vit_agg,  "claim_id", "left")
 )
 
 # ================================================================
-# 6. DERIVED COLUMNS (AGE, DATE PARTS)
+# 6. AGE & DATE DERIVATIVES
 # ================================================================
-# Usia simple: selisih tahun, cukup untuk feature awal
 base = (
-    base
-    .withColumn(
+    base.withColumn(
         "patient_age",
         when(col("patient_dob").isNull(), lit(None))
         .otherwise(year(col("visit_date")) - year(col("patient_dob")))
     )
-    .withColumn("visit_year",  year(col("visit_date")).cast("int"))
-    .withColumn("visit_month", month(col("visit_date")).cast("int"))
-    .withColumn("visit_day",   dayofmonth(col("visit_date")).cast("int"))
+    .withColumn("visit_year",  year(col("visit_date")))
+    .withColumn("visit_month", month(col("visit_date")))
+    .withColumn("visit_day",   dayofmonth(col("visit_date")))
 )
 
-# Helper flags
+# Presence flags
 base = (
-    base
-    .withColumn(
-        "has_procedure",
-        when(size(col("procedures_icd9_codes")) > 0, lit(1)).otherwise(lit(0))
-    )
-    .withColumn(
-        "has_drug",
-        when(size(col("drug_codes")) > 0, lit(1)).otherwise(lit(0))
-    )
-    .withColumn(
-        "has_vitamin",
-        when(size(col("vitamin_names")) > 0, lit(1)).otherwise(lit(0))
-    )
+    base.withColumn("has_procedure", when(size("procedures_icd9_codes") > 0, 1).otherwise(0))
+        .withColumn("has_drug",      when(size("drug_codes") > 0, 1).otherwise(0))
+        .withColumn("has_vitamin",   when(size("vitamin_names") > 0, 1).otherwise(0))
 )
 
 # ================================================================
-# 7. ICD10 SEVERITY SCORE (KASAR)
+# 7. ICD10 SEVERITY SCORE
 # ================================================================
-# Mapping kasar: makin tinggi = makin berat
 severity_map = {
-    "A": 3, "B": 3,           # Infectious / parasitic
-    "C": 4, "D": 4,           # Neoplasms & blood
-    "E": 2,                   # Endocrine
-    "F": 1, "G": 2,           # Mental / Neuro
-    "H": 1, "I": 3,           # Eye/ear / circulatory
-    "J": 1,                   # Respiratory (flu dsb)
-    "K": 2                    # Digestive
+    "A": 3, "B": 3, "C": 4, "D": 4,
+    "E": 2, "F": 1, "G": 2, "H": 1,
+    "I": 3, "J": 1, "K": 2
 }
 
-severity_mapping_expr = F.create_map([lit(x) for pair in severity_map.items() for x in pair])
+mapping_expr = F.create_map([lit(x) for p in severity_map.items() for x in p])
 
 base = (
-    base
-    .withColumn("icd10_first_letter", substring(col("icd10_primary_code"), 1, 1))
-    .withColumn("severity_score", severity_mapping_expr[col("icd10_first_letter")])
+    base.withColumn("icd10_first_letter", substring("icd10_primary_code", 1, 1))
+        .withColumn("severity_score", mapping_expr[col("icd10_first_letter")])
 )
 
 # ================================================================
-# 8. DIAGNOSIS vs PROCEDURE MISMATCH
+# 8. OLD RULES (Masih dipakai partial)
 # ================================================================
-# Contoh rule:
-# - Diagnosis severity rendah (1) tapi ada banyak prosedur → mencurigakan
-base = (
-    base.withColumn(
-        "diagnosis_procedure_mismatch",
-        when(
-            (col("severity_score") <= 1) &  # penyakit ringan
-            (col("has_procedure") == 1),    # tapi banyak tindakan
-            lit(1)
-        ).otherwise(lit(0))
-    )
+base = base.withColumn(
+    "diagnosis_procedure_mismatch",
+    when((col("severity_score") <= 1) & (col("has_procedure") == 1), 1).otherwise(0)
 )
 
-# ================================================================
-# 9. DRUG MISMATCH (CONTOH SEDERHANA)
-# ================================================================
-# Contoh rule:
-# - Diagnosis Jxx (penyakit napas) tapi tidak ada obat yang relevan (sangat kasar)
 drug_names_str = concat_ws(" ", col("drug_names"))
 
-base = (
-    base.withColumn(
-        "drug_mismatch_score",
-        when(
-            (col("icd10_primary_code").startswith("J")) &  # batuk/flu dsb
-            (col("has_drug") == 0),                       # tidak ada obat sama sekali
-            lit(1)
-        ).otherwise(lit(0))
-    )
+base = base.withColumn(
+    "drug_mismatch_score",
+    when((col("icd10_primary_code").startswith("J")) & (col("has_drug") == 0), 1).otherwise(0)
+)
+
+# cost per procedure
+base = base.withColumn("cost_per_procedure", col("total_claim_amount") / (col("has_procedure") + lit(1)))
+
+base = base.withColumn(
+    "cost_procedure_anomaly",
+    when(col("cost_per_procedure") > 75_000_000, 1).otherwise(0)
 )
 
 # ================================================================
-# 10. COST PER PROCEDURE ANOMALY
-# ================================================================
-base = (
-    base.withColumn(
-        "cost_per_procedure",
-        col("total_claim_amount") / (col("has_procedure") + lit(1))  # +1 biar tidak div 0
-    )
-)
-
-# Rule kasar: jika cost per procedure sangat tinggi
-base = (
-    base.withColumn(
-        "cost_procedure_anomaly",
-        when(col("cost_per_procedure") > lit(75_000_000), lit(1)).otherwise(lit(0))
-    )
-)
-
-# ================================================================
-# 11. PATIENT HISTORY RISK (FREQUENCY)
+# 9. PATIENT CLAIM HISTORY
 # ================================================================
 w_pid = Window.partitionBy("patient_nik")
 
-base = (
-    base.withColumn(
-        "patient_claim_count",
-        count("*").over(w_pid)
-    )
-)
+base = base.withColumn("patient_claim_count", count("*").over(w_pid))
 
-base = (
-    base.withColumn(
-        "patient_frequency_risk",
-        when(col("patient_claim_count") > 5, lit(1)).otherwise(lit(0))
-    )
+base = base.withColumn(
+    "patient_frequency_risk",
+    when(col("patient_claim_count") > 5, 1).otherwise(0)
 )
 
 # ================================================================
-# 12. Z-SCORE ANOMALY BY PEER GROUP (ICD10 + VISIT TYPE)
+# 10. COST Z-SCORE
 # ================================================================
 w_cost = Window.partitionBy("icd10_primary_code", "visit_type")
 
 base = (
-    base
-    .withColumn("mean_cost", avg(col("total_claim_amount")).over(w_cost))
-    .withColumn("std_cost",  stddev_pop(col("total_claim_amount")).over(w_cost))
-    .withColumn(
-        "biaya_anomaly_score",
-        when(col("std_cost").isNull() | (col("std_cost") == 0), lit(0.0))
-        .otherwise(
-            spark_abs((col("total_claim_amount") - col("mean_cost")) / col("std_cost"))
+    base.withColumn("mean_cost", avg("total_claim_amount").over(w_cost))
+        .withColumn("std_cost",  stddev_pop("total_claim_amount").over(w_cost))
+        .withColumn(
+            "biaya_anomaly_score",
+            when(col("std_cost").isNull() | (col("std_cost") == 0), 0.0)
+            .otherwise(spark_abs((col("total_claim_amount") - col("mean_cost")) / col("std_cost")))
         )
-    )
 )
 
 # ================================================================
-# 13. STRONG RULE VIOLATION FLAG (KOMBINASI RULE)
+# 11. LEGACY VALIDITY SCORE (Keep)
 # ================================================================
 base = (
-    base
-    .withColumn(
-        "rule_violation_flag",
-        when(
-            (col("diagnosis_procedure_mismatch") == 1) |
-            (col("drug_mismatch_score") == 1) |
-            (col("cost_procedure_anomaly") == 1) |
-            (col("patient_frequency_risk") == 1) |
-            (col("biaya_anomaly_score") > 2.5),
-            lit(1)
-        ).otherwise(lit(0))
-    )
-)
-
-base = (
-    base
-    .withColumn(
-        "rule_violation_reason",
-        when(col("rule_violation_flag") == 0, lit(None))
-        .otherwise(
-            when(col("diagnosis_procedure_mismatch") == 1, lit("Diagnosis-procedure mismatch"))
-            .when(col("drug_mismatch_score") == 1, lit("Drug mismatch"))
-            .when(col("cost_procedure_anomaly") == 1, lit("Cost-per-procedure anomaly"))
-            .when(col("patient_frequency_risk") == 1, lit("Patient claim frequency high"))
-            .when(col("biaya_anomaly_score") > 2.5, lit("Z-score anomaly high"))
-        )
-    )
-)
-
-# ================================================================
-# 13B. BACKWARD COMPAT — LEGACY RULE SCORES
-# ================================================================
-# Kita isi tiga kolom lama (tindakan/obat/vitamin validity) dari rule di atas,
-# supaya:
-#   - schema tetap cocok dengan tabel Iceberg existing
-#   - model & backend lama masih bisa pakai field yang sama
-
-base = (
-    base
-    # TINDAKAN: penalti jika tidak ada prosedur atau mismatch
-    .withColumn(
+    base.withColumn(
         "tindakan_validity_score",
-        when(col("has_procedure") == 0, lit(0.3))                       # tidak ada tindakan sama sekali
-        .when(col("diagnosis_procedure_mismatch") == 1, lit(0.2))       # tindakan tidak sesuai severity
-        .otherwise(lit(1.0))                                            # aman
+        when(col("has_procedure") == 0, 0.3)
+        .when(col("diagnosis_procedure_mismatch") == 1, 0.2)
+        .otherwise(1.0)
     )
-    # OBAT: penalti jika drug mismatch / tidak ada obat untuk diagnosis yang butuh obat
     .withColumn(
         "obat_validity_score",
-        when(col("drug_mismatch_score") == 1, lit(0.3))
-        .when((col("has_drug") == 0) & (col("severity_score") >= 2), lit(0.5))
-        .otherwise(lit(1.0))
+        when(col("drug_mismatch_score") == 1, 0.3)
+        .when((col("has_drug") == 0) & (col("severity_score") >= 2), 0.5)
+        .otherwise(1.0)
     )
-    # VITAMIN: penalti jika vitamin tanpa obat di kasus ringan → cenderung "upcoding"
     .withColumn(
         "vitamin_relevance_score",
-        when(
-            (col("has_vitamin") == 1) &
-            (col("has_drug") == 0) &
-            (col("severity_score") <= 1),
-            lit(0.3)
-        )
-        .otherwise(lit(1.0))
+        when((col("has_vitamin") == 1) & (col("has_drug") == 0) & (col("severity_score") <= 1), 0.3)
+        .otherwise(1.0)
     )
 )
 
+# ================================================================
+# 12. CLINICAL COMPATIBILITY MATRIX (NEW RULES)
+# ================================================================
+map_proc = spark.table("iceberg_ref.icd10_icd9_map").groupBy("icd10_code") \
+    .agg(F.collect_set("icd9_code").alias("allowed_icd9_codes"))
 
+map_drug = spark.table("iceberg_ref.icd10_drug_map").groupBy("icd10_code") \
+    .agg(F.collect_set("drug_code").alias("allowed_drug_codes"))
 
-# ============= RULE ===============
-# Mapping ICD10 → allowed ICD9
-map_proc = (
-    spark.table("iceberg_ref.icd10_icd9_map")
-         .groupBy("icd10_code")
-         .agg(F.collect_set("icd9_code").alias("allowed_icd9_codes"))
-)
+map_vit = spark.table("iceberg_ref.icd10_vitamin_map").groupBy("icd10_code") \
+    .agg(F.collect_set("vitamin_name").alias("allowed_vitamins"))
 
-# Mapping ICD10 → allowed drug codes
-map_drug = (
-    spark.table("iceberg_ref.icd10_drug_map")
-         .groupBy("icd10_code")
-         .agg(F.collect_set("drug_code").alias("allowed_drug_codes"))
-)
-
-# Mapping ICD10 → allowed vitamins
-map_vit = (
-    spark.table("iceberg_ref.icd10_vitamin_map")
-         .groupBy("icd10_code")
-         .agg(F.collect_set("vitamin_name").alias("allowed_vitamins"))
-)
-
-# Join ke base (left join, karena tidak semua ICD10 mungkin ada di matrix)
 base = (
     base
     .join(map_proc, base.icd10_primary_code == map_proc.icd10_code, "left")
     .join(map_drug, base.icd10_primary_code == map_drug.icd10_code, "left")
-    .join(map_vit,  base.icd10_primary_code == map_vit.icd10_code,  "left")
+    .join(map_vit,  base.icd10_primary_code == map_vit.icd10_code, "left")
 )
 
-# Hitung score 0.0 atau 1.0
-# 1. diagnosis_procedure_score
+# 1. Procedure match
 base = base.withColumn(
     "diagnosis_procedure_score",
-    F.when(
-        (F.col("allowed_icd9_codes").isNotNull()) &
-        (F.size(F.array_intersect(F.col("procedures_icd9_codes"), F.col("allowed_icd9_codes"))) > 0),
-        F.lit(1.0)
-    ).otherwise(F.lit(0.0))
+    when(
+        (col("allowed_icd9_codes").isNotNull()) &
+        (size(F.array_intersect(col("procedures_icd9_codes"), col("allowed_icd9_codes"))) > 0),
+        1.0
+    ).otherwise(0.0)
 )
 
-# 2. diagnosis_drug_score
+# 2. Drug match
 base = base.withColumn(
     "diagnosis_drug_score",
-    F.when(
-        (F.col("allowed_drug_codes").isNotNull()) &
-        (F.size(F.array_intersect(F.col("drug_codes"), F.col("allowed_drug_codes"))) > 0),
-        F.lit(1.0)
-    ).otherwise(F.lit(0.0))
+    when(
+        (col("allowed_drug_codes").isNotNull()) &
+        (size(F.array_intersect(col("drug_codes"), col("allowed_drug_codes"))) > 0),
+        1.0
+    ).otherwise(0.0)
 )
 
-# 3. diagnosis_vitamin_score
+# 3. Vitamin match
 base = base.withColumn(
     "diagnosis_vitamin_score",
-    F.when(
-        (F.col("allowed_vitamins").isNotNull()) &
-        (F.size(F.array_intersect(F.col("vitamin_names"), F.col("allowed_vitamins"))) > 0),
-        F.lit(1.0)
-    ).otherwise(F.lit(0.0))
+    when(
+        (col("allowed_vitamins").isNotNull()) &
+        (size(F.array_intersect(col("vitamin_names"), col("allowed_vitamins"))) > 0),
+        1.0
+    ).otherwise(0.0)
 )
 
-# 4. treatment_consistency_score
+# 4. Consistency score
 base = base.withColumn(
     "treatment_consistency_score",
-    (
-        F.col("diagnosis_procedure_score")
-        + F.col("diagnosis_drug_score")
-        + F.col("diagnosis_vitamin_score")
-    ) / F.lit(3.0)
+    (col("diagnosis_procedure_score") +
+     col("diagnosis_drug_score") +
+     col("diagnosis_vitamin_score")) / lit(3.0)
 )
 
-# Optional, bersihkan kolom helper mapping kalau tidak mau ikut ke feature_set
-base = base.drop(
-    "allowed_icd9_codes", "allowed_drug_codes", "allowed_vitamins",
-    "icd10_code"  # dari join mapping
+# Clean helper
+base = base.drop("allowed_icd9_codes", "allowed_drug_codes", "allowed_vitamins")
+
+# ================================================================
+# 13. FINAL RULE FLAG (UPDATED)
+# ================================================================
+base = base.withColumn(
+    "rule_violation_flag",
+    when(
+        (col("diagnosis_procedure_score") == 0) |
+        (col("diagnosis_drug_score") == 0) |
+        (col("diagnosis_vitamin_score") == 0) |
+        (col("cost_procedure_anomaly") == 1) |
+        (col("patient_frequency_risk") == 1) |
+        (col("biaya_anomaly_score") > 2.5),
+        1
+    ).otherwise(0)
 )
 
+base = base.withColumn(
+    "rule_violation_reason",
+    when(col("rule_violation_flag") == 0, None)
+    .otherwise(
+        when(col("diagnosis_procedure_score") == 0, "Procedure mismatch")
+        .when(col("diagnosis_drug_score") == 0, "Drug mismatch")
+        .when(col("diagnosis_vitamin_score") == 0, "Vitamin mismatch")
+        .when(col("cost_procedure_anomaly") == 1, "Procedure cost anomaly")
+        .when(col("patient_frequency_risk") == 1, "High patient claim frequency")
+        .when(col("biaya_anomaly_score") > 2.5, "Z-score cost anomaly")
+    )
+)
 
 # ================================================================
-# 14. FINAL SELECT — MATCHING TABLE SCHEMA
+# 14. FINAL SCHEMA SELECT
 # ================================================================
-# Schema EXISTING di iceberg_curated.claim_feature_set (dari error sebelumnya):
-# `claim_id`, `patient_nik`, `patient_name`, `patient_gender`,
-# `patient_dob`, `patient_age`, `visit_date`, `visit_year`, `visit_month`,
-# `visit_day`, `visit_type`, `doctor_name`, `department`, `icd10_primary_code`,
-# `icd10_primary_desc`, `procedures_icd9_codes`, `procedures_icd9_descs`,
-# `drug_codes`, `drug_names`, `vitamin_names`, `total_procedure_cost`,
-# `total_drug_cost`, `total_vitamin_cost`, `total_claim_amount`,
-# `tindakan_validity_score`, `obat_validity_score`, `vitamin_relevance_score`,
-# `biaya_anomaly_score`, `rule_violation_flag`, `rule_violation_reason`,
-# `created_at`.
-
 feature_df = base.select(
     "claim_id",
     "patient_nik",
@@ -411,12 +296,18 @@ feature_df = base.select(
     "total_vitamin_cost",
     "total_claim_amount",
 
-    # --- OLD VALIDITY COLUMNS (HARUS ADA)
+    # OLD validity
     "tindakan_validity_score",
     "obat_validity_score",
     "vitamin_relevance_score",
 
-    # --- NEW FRAUD RULES (MATCH EXACT DDL)
+    # NEW compatibility scores
+    "diagnosis_procedure_score",
+    "diagnosis_drug_score",
+    "diagnosis_vitamin_score",
+    "treatment_consistency_score",
+
+    # Frauds
     "severity_score",
     "diagnosis_procedure_mismatch",
     "drug_mismatch_score",
@@ -424,29 +315,24 @@ feature_df = base.select(
     "cost_procedure_anomaly",
     "patient_claim_count",
     "patient_frequency_risk",
-
-    # --- ANOMALY
     "biaya_anomaly_score",
 
-    # --- FINAL FLAG
     "rule_violation_flag",
     "rule_violation_reason",
 
     current_timestamp().alias("created_at")
 )
 
-print("Final feature_df schema:")
+print("Final schema:")
 feature_df.printSchema()
 
 # ================================================================
-# 15. WRITE TO ICEBERG (CURATED)
+# 15. WRITE TO ICEBERG
 # ================================================================
 (
-    feature_df
-        .writeTo("iceberg_curated.claim_feature_set")
-        .overwritePartitions()
+    feature_df.writeTo("iceberg_curated.claim_feature_set")
+               .overwritePartitions()
 )
 
-print("=== FRAUD ETL COMPLETED SUCCESSFULLY ===")
-
+print("=== ETL COMPLETED SUCCESSFULLY ===")
 spark.stop()
