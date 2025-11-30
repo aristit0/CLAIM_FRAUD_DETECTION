@@ -1,0 +1,15 @@
+body {
+    background-image: url('/static/bg.jpg');
+    background-size: cover;
+    background-position: center;
+    background-attachment: fixed;
+    overflow-x: hidden;
+    font-family: Arial, sans-serif;
+}
+
+/* Tambahkan overlay supaya teks tetap terbaca */
+.background-overlay {
+    backdrop-filter: brightness(0.88);
+    min-height: 100vh;
+    padding: 20px;
+}
