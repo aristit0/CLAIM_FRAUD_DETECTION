@@ -171,13 +171,15 @@ print(classification_report(y_test, y_pred))
 # =====================================================
 # SHAP
 # =====================================================
-print("=== SHAP ===")
-explainer = shap.TreeExplainer(model)
-shap_values = explainer.shap_values(X_train.sample(200, random_state=42))
+print("=== SHAP (safe version) ===")
 
+explainer = shap.Explainer(model, X_train[:200])
+shap_values = explainer(X_train[:200])
+
+# nilai absolute mean importance
 feature_scores = dict(
     sorted(
-        zip(X.columns, np.abs(shap_values).mean(axis=0)),
+        zip(X.columns, np.abs(shap_values.values).mean(axis=0)),
         key=lambda kv: kv[1],
         reverse=True
     )

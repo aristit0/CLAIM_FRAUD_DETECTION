@@ -4,3 +4,4 @@ xgboost
 pandas
 seaborn
 lightgbm
+category_encoders
