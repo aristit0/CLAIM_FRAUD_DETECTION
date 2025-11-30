@@ -291,6 +291,86 @@ base = (
     )
 )
 
+
+
+# ============= RULE ===============
+# Mapping ICD10 → allowed ICD9
+map_proc = (
+    spark.table("iceberg_ref.icd10_icd9_map")
+         .groupBy("icd10_code")
+         .agg(F.collect_set("icd9_code").alias("allowed_icd9_codes"))
+)
+
+# Mapping ICD10 → allowed drug codes
+map_drug = (
+    spark.table("iceberg_ref.icd10_drug_map")
+         .groupBy("icd10_code")
+         .agg(F.collect_set("drug_code").alias("allowed_drug_codes"))
+)
+
+# Mapping ICD10 → allowed vitamins
+map_vit = (
+    spark.table("iceberg_ref.icd10_vitamin_map")
+         .groupBy("icd10_code")
+         .agg(F.collect_set("vitamin_name").alias("allowed_vitamins"))
+)
+
+# Join ke base (left join, karena tidak semua ICD10 mungkin ada di matrix)
+base = (
+    base
+    .join(map_proc, base.icd10_primary_code == map_proc.icd10_code, "left")
+    .join(map_drug, base.icd10_primary_code == map_drug.icd10_code, "left")
+    .join(map_vit,  base.icd10_primary_code == map_vit.icd10_code,  "left")
+)
+
+# Hitung score 0.0 atau 1.0
+# 1. diagnosis_procedure_score
+base = base.withColumn(
+    "diagnosis_procedure_score",
+    F.when(
+        (F.col("allowed_icd9_codes").isNotNull()) &
+        (F.size(F.array_intersect(F.col("procedures_icd9_codes"), F.col("allowed_icd9_codes"))) > 0),
+        F.lit(1.0)
+    ).otherwise(F.lit(0.0))
+)
+
+# 2. diagnosis_drug_score
+base = base.withColumn(
+    "diagnosis_drug_score",
+    F.when(
+        (F.col("allowed_drug_codes").isNotNull()) &
+        (F.size(F.array_intersect(F.col("drug_codes"), F.col("allowed_drug_codes"))) > 0),
+        F.lit(1.0)
+    ).otherwise(F.lit(0.0))
+)
+
+# 3. diagnosis_vitamin_score
+base = base.withColumn(
+    "diagnosis_vitamin_score",
+    F.when(
+        (F.col("allowed_vitamins").isNotNull()) &
+        (F.size(F.array_intersect(F.col("vitamin_names"), F.col("allowed_vitamins"))) > 0),
+        F.lit(1.0)
+    ).otherwise(F.lit(0.0))
+)
+
+# 4. treatment_consistency_score
+base = base.withColumn(
+    "treatment_consistency_score",
+    (
+        F.col("diagnosis_procedure_score")
+        + F.col("diagnosis_drug_score")
+        + F.col("diagnosis_vitamin_score")
+    ) / F.lit(3.0)
+)
+
+# Optional, bersihkan kolom helper mapping kalau tidak mau ikut ke feature_set
+base = base.drop(
+    "allowed_icd9_codes", "allowed_drug_codes", "allowed_vitamins",
+    "icd10_code"  # dari join mapping
+)
+
+
 # ================================================================
 # 14. FINAL SELECT — MATCHING TABLE SCHEMA
 # ================================================================
