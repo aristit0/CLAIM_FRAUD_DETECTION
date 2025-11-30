@@ -3,6 +3,13 @@
 <head>
     <title>Claim Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+
+    <style>
+        .page-link-active {
+            background-color: #2563eb;
+            color: white;
+        }
+    </style>
 </head>
 
 <body class="bg-gray-900 text-white min-h-screen">
@@ -46,7 +53,7 @@
                     <td class="p-3">{{ c.visit_date }}</td>
                     <td class="p-3">{{ c.visit_type }}</td>
                     <td class="p-3">{{ c.department }}</td>
-                    <td class="p-3">Rp {{ "%.0f"|format(c.total_claim_amount) }}</td>
+                    <td class="p-3">{{ c.total_claim_amount | rupiah }}</td>
 
                     <td class="p-3">
                         {% if c.status == "approved" %}
@@ -76,9 +83,60 @@
 
         </table>
     </div>
+
+    <!-- PAGINATION -->
+    <div class="mt-6 flex justify-center space-x-2" id="pagination"></div>
+
 </div>
 
+
 <script>
+const rowsPerPage = 20;
+let currentPage = 1;
+
+function paginate() {
+    const table = document.getElementById("claimsTable");
+    const rows = table.querySelectorAll("tbody tr");
+    const totalRows = rows.length;
+    const totalPages = Math.ceil(totalRows / rowsPerPage);
+
+    // Hide all rows
+    rows.forEach(r => r.style.display = "none");
+
+    // Show only current page
+    let start = (currentPage - 1) * rowsPerPage;
+    let end = start + rowsPerPage;
+
+    rows.forEach((row, idx) => {
+        if (idx >= start && idx < end) row.style.display = "";
+    });
+
+    renderPagination(totalPages);
+}
+
+function renderPagination(totalPages) {
+    let container = document.getElementById("pagination");
+    container.innerHTML = "";
+
+    for (let p = 1; p <= totalPages; p++) {
+        let btn = document.createElement("button");
+        btn.innerText = p;
+
+        btn.className = "px-3 py-1 rounded bg-gray-700 text-white hover:bg-gray-600";
+
+        if (p === currentPage) {
+            btn.classList.add("page-link-active");
+        }
+
+        btn.onclick = () => {
+            currentPage = p;
+            paginate();
+        };
+
+        container.appendChild(btn);
+    }
+}
+
 function filterTable() {
     let filter = document.getElementById("searchInput").value.toLowerCase();
     let rows = document.querySelectorAll("#claimsTable tbody tr");
@@ -88,6 +146,9 @@ function filterTable() {
         row.style.display = text.includes(filter) ? "" : "none";
     });
 }
+
+// Initialize when page loads
+window.onload = paginate;
 </script>
 
 </body>
