@@ -82,7 +82,7 @@ def dashboard():
                department,
                total_claim_amount,
                status
-        FROM claim_header
+        FROM claim_header where status = 'pending'
         ORDER BY claim_id DESC
         LIMIT {limit} OFFSET {offset}
     """)
