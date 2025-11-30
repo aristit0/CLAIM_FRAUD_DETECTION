@@ -132,9 +132,12 @@ def get_claim_features(claim_id: int):
         ORDER BY is_primary DESC, id ASC
         LIMIT 1
     """, (claim_id,))
+
     diag = cursor.fetchone()
+
     header["icd10_primary_code"] = diag["icd10_code"] if diag else None
     header["icd10_primary_description"] = diag["icd10_description"] if diag else None
+    
     cursor.close()
     conn.close()
 
@@ -160,6 +163,7 @@ def get_claim_features(claim_id: int):
         "visit_type": header.get("visit_type"),
         "department": header.get("department"),
         "icd10_primary_code": header.get("icd10_primary_code"),
+        "icd10_primary_description": header.get("icd10_primary_description"),
         "total_claim_amount": float(header.get("total_claim_amount") or 0),
         "total_procedure_cost": float(header.get("total_procedure_cost") or 0),
         "total_drug_cost": float(header.get("total_drug_cost") or 0),

@@ -22,6 +22,68 @@
             </div>
         </div>
 
+        <div class="row">
+            <div class="col-md-4 mb-3">
+                <label>Tanggal Lahir</label>
+                <input class="form-control" type="date" name="patient_dob" required>
+            </div>
+
+            <div class="col-md-4 mb-3">
+                <label>Jenis Kelamin</label>
+                <select class="form-control" name="patient_gender" required>
+                    <option value="M">Laki-laki</option>
+                    <option value="F">Perempuan</option>
+                </select>
+            </div>
+
+            <div class="col-md-4 mb-3">
+                <label>No. Telepon</label>
+                <input class="form-control" name="patient_phone">
+            </div>
+        </div>
+
+        <div class="mb-3">
+            <label>Alamat</label>
+            <input class="form-control" name="patient_address">
+        </div>
+
+        <div class="row">
+            <div class="col-md-6 mb-3">
+                <label>Tanggal Kunjungan</label>
+                <input class="form-control" type="date" name="visit_date" required>
+            </div>
+
+            <div class="col-md-6 mb-3">
+                <label>Jenis Kunjungan</label>
+                <select class="form-control" name="visit_type" required>
+                    <option value="rawat jalan">Rawat Jalan</option>
+                    <option value="rawat inap">Rawat Inap</option>
+                    <option value="igd">IGD</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-md-6 mb-3">
+                <label>Dokter Pemeriksa</label>
+                <input class="form-control" name="doctor_name" required>
+            </div>
+
+            <div class="col-md-6 mb-3">
+                <label>Department</label>
+                <select class="form-control" name="department">
+                    <option>Poli Umum</option>
+                    <option>Poli Anak</option>
+                    <option>Poli Gigi</option>
+                    <option>IGD</option>
+                    <option>Kebidanan</option>
+                    <option>Bedah</option>
+                </select>
+            </div>
+        </div>
+
+        <hr>
+
         <div class="mb-3">
             <label>Diagnosis (ICD-10)</label>
             <input class="form-control" name="diagnosis" required>
@@ -34,7 +96,7 @@
 
         <div class="mb-3">
             <label>Obat (Fornas)</label>
-            <input class="form-control" name="drug" required>
+            <input class="form-control" name="drug">
         </div>
 
         <div class="mb-3">

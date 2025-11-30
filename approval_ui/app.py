@@ -118,6 +118,13 @@ def review(claim_id):
 
     # --- Fraud Scoring dari backend CML
     scoring = requests.get(f"{BACKEND_URL}{claim_id}", verify=False).json()
+    # overwrite header with scoring details if missing
+    if scoring and "features" in scoring:
+        f = scoring["features"]
+
+        header["patient_age"] = f.get("patient_age")
+        header["icd10_primary_code"] = f.get("icd10_primary_code")
+        header["icd10_primary_description"] = f.get("icd10_primary_description")
 
     return render_template(
         "review.html",
