@@ -92,7 +92,7 @@
 
         <div class="mb-3">
             <label>Diagnosis Utama (ICD-10)</label>
-            <select class="form-control" name="diagnosis_primary" required>
+            <select class="form-control" name="diagnosis_primary" required id="dx_primary">
                 {% for code, desc in ICD10 %}
                 <option value="{{ code }}">{{ code }} - {{ desc }}</option>
                 {% endfor %}
@@ -101,7 +101,7 @@
 
         <div class="mb-3">
             <label>Diagnosis Sekunder (Opsional)</label>
-            <select class="form-control" name="diagnosis_secondary">
+            <select class="form-control" name="diagnosis_secondary" id="dx_secondary">
                 <option value="">- Tidak Ada -</option>
                 {% for code, desc in ICD10 %}
                 <option value="{{ code }}">{{ code }} - {{ desc }}</option>
@@ -111,7 +111,7 @@
 
         <div class="mb-3">
             <label>Tindakan (ICD-9)</label>
-            <select class="form-control" name="procedure" required>
+            <select class="form-control" name="procedure" required id="px_code">
                 {% for code, desc in ICD9 %}
                 <option value="{{ code }}">{{ code }} - {{ desc }}</option>
                 {% endfor %}
@@ -125,7 +125,7 @@
         <div class="row">
             <div class="col-md-6 mb-3">
                 <label>Kode Obat</label>
-                <select class="form-control" name="drug_code">
+                <select class="form-control" name="drug_code" id="drug_code">
                     {% for code, name in DRUGS %}
                     <option value="{{ code }}">{{ code }} - {{ name }}</option>
                     {% endfor %}
@@ -134,7 +134,7 @@
 
             <div class="col-md-6 mb-3">
                 <label>Biaya Obat</label>
-                <input type="number" name="drug_cost" class="form-control" placeholder="0">
+                <input type="number" name="drug_cost" class="form-control" id="drug_cost" placeholder="0">
             </div>
         </div>
 
@@ -145,7 +145,7 @@
         <div class="row">
             <div class="col-md-6 mb-3">
                 <label>Vitamin</label>
-                <select class="form-control" name="vitamin_name">
+                <select class="form-control" name="vitamin_name" id="vitamin_name">
                     {% for v in VITAMINS %}
                     <option>{{ v }}</option>
                     {% endfor %}
@@ -154,7 +154,7 @@
 
             <div class="col-md-6 mb-3">
                 <label>Biaya Vitamin</label>
-                <input type="number" name="vitamin_cost" class="form-control" placeholder="0">
+                <input type="number" name="vitamin_cost" class="form-control" id="vitamin_cost" placeholder="0">
             </div>
         </div>
 
@@ -164,12 +164,105 @@
 
         <div class="mb-3">
             <label>Biaya Prosedur</label>
-            <input type="number" class="form-control" name="procedure_cost" required>
+            <input type="number" class="form-control" name="procedure_cost" id="procedure_cost" required>
+        </div>
+
+        <hr>
+
+        <!-- ============================================================ -->
+        <!-- AUTO-FILL BUTTONS -->
+        <!-- ============================================================ -->
+
+        <div class="d-flex gap-2 mb-3">
+            <button type="button" class="btn btn-success w-50" onclick="fillNormal();">Auto-Fill Normal</button>
+            <button type="button" class="btn btn-danger w-50" onclick="fillFraud();">Auto-Fill Fraud (Tindakan Tidak Relevan)</button>
         </div>
 
         <button class="btn btn-primary w-100">Submit Claim</button>
 
     </form>
 </div>
+
+<!-- ============================================================ -->
+<!-- JAVASCRIPT AUTO-FILL SECTION -->
+<!-- ============================================================ -->
+<script>
+    function rand(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+    // Ambil semua master data dari backend (aman untuk VSCode & browser)
+    const dxList = JSON.parse(`{{ ICD10|tojson|safe }}`);
+    const pxList = JSON.parse(`{{ ICD9|tojson|safe }}`);
+    const drugList = JSON.parse(`{{ DRUGS|tojson|safe }}`);
+    const vitaminList = JSON.parse(`{{ VITAMINS|tojson|safe }}`);
+
+    // ======================
+    // NORMAL INPUT
+    // ======================
+    function fillNormal() {
+
+        document.querySelector("input[name='patient_name']").value = "Budi Santoso";
+        document.querySelector("input[name='patient_nik']").value = "3174091501800004";
+        document.querySelector("input[name='patient_dob']").value = "1980-01-15";
+        document.querySelector("select[name='patient_gender']").value = "M";
+        document.querySelector("input[name='patient_phone']").value = "081234567890";
+        document.querySelector("input[name='patient_address']").value = "Jl. Merdeka No.10 Jakarta";
+
+        document.querySelector("input[name='visit_date']").value = "2024-12-21";
+        document.querySelector("select[name='visit_type']").value = "rawat jalan";
+        document.querySelector("input[name='doctor_name']").value = "Dr. Ratna Sari";
+        document.querySelector("select[name='department']").value = "Poli Umum";
+
+        // Diagnosis & Procedure normal
+        document.getElementById("dx_primary").value = dxList[0][0];
+        document.getElementById("px_code").value = pxList[0][0];
+
+        // Obat normal
+        document.getElementById("drug_code").value = drugList[0][0];
+        document.getElementById("drug_cost").value = 50000;
+
+        // Vitamin normal
+        document.getElementById("vitamin_name").value = vitaminList[0];
+        document.getElementById("vitamin_cost").value = 20000;
+
+        document.getElementById("procedure_cost").value = 80000;
+    }
+
+    // ======================
+    // FRAUD: Tindakan tidak relevan
+    // ======================
+    function fillFraud() {
+
+        document.querySelector("input[name='patient_name']").value = "Siti Rahmawati";
+        document.querySelector("input[name='patient_nik']").value = "3175024302750006";
+        document.querySelector("input[name='patient_dob']").value = "1975-02-13";
+        document.querySelector("select[name='patient_gender']").value = "F";
+        document.querySelector("input[name='patient_phone']").value = "081298765432";
+        document.querySelector("input[name='patient_address']").value = "Jl. Mawar No.55 Bekasi";
+
+        document.querySelector("input[name='visit_date']").value = "2024-12-22";
+        document.querySelector("select[name='visit_type']").value = "rawat jalan";
+        document.querySelector("input[name='doctor_name']").value = "Dr. Wibisana";
+        document.querySelector("select[name='department']").value = "Poli Saraf";
+
+        // Diagnosis ringan
+        const dxLight = ["J06", "A09", "K29"];
+        document.getElementById("dx_primary").value = rand(dxLight);
+
+        // Prosedur FRAUD sangat berat dan tidak relevan
+        const pxFraud = ["99.04", "39.95", "99.07"];
+        document.getElementById("px_code").value = rand(pxFraud);
+
+        // Obat wajar
+        document.getElementById("drug_code").value = drugList[2][0];
+        document.getElementById("drug_cost").value = 120000;
+
+        // Vitamin random
+        document.getElementById("vitamin_name").value = rand(vitaminList);
+        document.getElementById("vitamin_cost").value = 45000;
+
+        // Prosedur mahal → memicu anomaly
+        document.getElementById("procedure_cost").value = 350000;
+    }
+</script>
 
 {% endblock %}
