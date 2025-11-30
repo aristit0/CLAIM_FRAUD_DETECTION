@@ -178,3 +178,5 @@ with open(os.path.join(ROOT, "meta.json"), "w") as f:
     )
 
 print("=== MODEL + ARTIFACTS SAVED TO /home/cdsw ===")
+
+spark.stop()
