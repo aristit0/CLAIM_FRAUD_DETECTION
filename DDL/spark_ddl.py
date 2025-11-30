@@ -58,28 +58,48 @@ CREATE TABLE iceberg_curated.claim_feature_set (
     visit_type STRING,
     doctor_name STRING,
     department STRING,
+
     icd10_primary_code STRING,
     icd10_primary_desc STRING,
+
     procedures_icd9_codes ARRAY<STRING>,
     procedures_icd9_descs ARRAY<STRING>,
+
     drug_codes ARRAY<STRING>,
     drug_names ARRAY<STRING>,
     vitamin_names ARRAY<STRING>,
+
     total_procedure_cost DOUBLE,
     total_drug_cost DOUBLE,
     total_vitamin_cost DOUBLE,
     total_claim_amount DOUBLE,
+
+    -- 3 dummy columns (legacy) REQUIRED BY BACKEND MODEL ENGINE
     tindakan_validity_score DOUBLE,
     obat_validity_score DOUBLE,
     vitamin_relevance_score DOUBLE,
+
+    -- === NEW FRAUD RULES (MATCH EXACTLY ETL SCRIPT) ===
+    severity_score INT,
+    diagnosis_procedure_mismatch INT,
+    drug_mismatch_score INT,
+    cost_per_procedure DOUBLE,
+    cost_procedure_anomaly INT,
+    patient_claim_count INT,
+    patient_frequency_risk INT,
+
+    -- Z-score anomaly
     biaya_anomaly_score DOUBLE,
+
+    -- Final risk
     rule_violation_flag INT,
     rule_violation_reason STRING,
+
     created_at TIMESTAMP
 )
 USING iceberg
 PARTITIONED BY (visit_year, visit_month)
-TBLPROPERTIES ('format-version'='2')
+TBLPROPERTIES ('format-version'='2');
 """)
 
 print("[OK] Iceberg v2 table created.")

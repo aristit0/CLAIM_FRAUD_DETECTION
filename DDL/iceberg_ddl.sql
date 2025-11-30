@@ -105,59 +105,44 @@ TBLPROPERTIES (
 
 
 
-
-CREATE EXTERNAL TABLE iceberg_curated.claim_facts (
-    claim_id BIGINT,
-    
-    -- patient base info
-    patient_nik STRING,
-    patient_name STRING,
-    patient_gender STRING,
-    patient_dob DATE,
-    patient_age INT,
-    patient_address STRING,
-    patient_phone STRING,
-
-    -- visit info
-    visit_date DATE,
-    visit_day INT,
-    visit_type STRING,
-    doctor_name STRING,
-    department STRING,
-
-    -- diagnosis flattened
-    icd10_primary_code STRING,
-    icd10_primary_desc STRING,
-    icd10_secondary_code STRING,
-    icd10_secondary_desc STRING,
-
-    -- procedure flattened
-    icd9_code STRING,
-    icd9_description STRING,
-
-    -- drug info flattened
-    drug_name STRING,
-    drug_code STRING,
-
-    -- vitamin
-    vitamin_name STRING,
-
-    -- cost info
-    total_cost DOUBLE,
-    procedure_cost DOUBLE,
-    drug_cost DOUBLE,
-    vitamin_cost DOUBLE,
-
-    -- claim status
-    created_at TIMESTAMP
-)
-PARTITIONED BY (
-    visit_year INT,
-    visit_month INT,
-    status STRING
-)
-STORED BY ICEBERG;
-
-
-
-
+CREATE EXTERNAL TABLE `iceberg_curated`.`claim_feature_set`(
+`claim_id` bigint,
+`patient_nik` string,
+`patient_name` string,
+`patient_gender` string,
+`patient_dob` date,
+`patient_age` int,
+`visit_date` date,
+`visit_year` int,
+`visit_month` int,
+`visit_day` int,
+`visit_type` string,
+`doctor_name` string,
+`department` string,
+`icd10_primary_code` string,
+`icd10_primary_desc` string,
+  `procedures_icd9_codes` array<string>, 
+  `procedures_icd9_descs` array<string>, 
+  `drug_codes` array<string>, 
+  `drug_names` array<string>, 
+  `vitamin_names` array<string>, 
+`total_procedure_cost` double,
+`total_drug_cost` double,
+`total_vitamin_cost` double,
+`total_claim_amount` double,
+`biaya_anomaly_score` double,
+`rule_violation_flag` int,
+`rule_violation_reason` string,
+`created_at` timestamp with local time zone,
+`severity_score` int,
+`diagnosis_procedure_mismatch` int,
+`drug_mismatch_score` int,
+`cost_per_procedure` double,
+`cost_procedure_anomaly` int,
+`patient_claim_count` int,
+`patient_frequency_risk` int)
+PARTITIONED BY SPEC (
+visit_year,
+visit_month)
+STORED BY ICEBERG
+TBLPROPERTIES ('format-version'='2');
