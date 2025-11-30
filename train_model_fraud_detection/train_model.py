@@ -1,34 +1,40 @@
+#!/usr/bin/env python3
 import cml.data_v1 as cmldata
 from pyspark.sql.functions import col
 import pandas as pd
+import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 import xgboost as xgb
-from sklearn.metrics import roc_auc_score, f1_score, classification_report
+from sklearn.metrics import roc_auc_score, f1_score, precision_score, recall_score, classification_report
+import shap
 import os, json, pickle
 
 
 # =====================================================
-# 1. Connect to Spark
+# 1. CONNECT TO SPARK AND LOAD FEATURE DATA
 # =====================================================
 CONNECTION_NAME = "CDP-MSI"
 conn = cmldata.get_connection(CONNECTION_NAME)
 spark = conn.get_spark_session()
 
-print("=== LOAD FEATURE TABLE ===")
+print("=== LOAD FEATURE TABLE FROM ICEBERG ===")
 
 df_spark = spark.sql("""
     SELECT *
     FROM iceberg_curated.claim_feature_set
 """)
 
+print("Schema:")
 df_spark.printSchema()
-print("Total rows:", df_spark.count())
+rows = df_spark.count()
+print("Total rows:", rows)
 
 
 # =====================================================
-# 2. Select feature columns
+# 2. SELECT FEATURE COLUMNS (UPDATED)
 # =====================================================
+
 label_col = "rule_violation_flag"
 
 numeric_cols = [
@@ -37,36 +43,46 @@ numeric_cols = [
     "total_drug_cost",
     "total_vitamin_cost",
     "total_claim_amount",
-    "tindakan_validity_score",
-    "obat_validity_score",
-    "vitamin_relevance_score",
+
+    # NEW FEATURES
+    "severity_score",
+    "diagnosis_procedure_mismatch",
+    "drug_mismatch_score",
+    "cost_per_procedure",
+    "cost_procedure_anomaly",
+    "patient_claim_count",
+    "patient_frequency_risk",
     "biaya_anomaly_score",
+
     "visit_year",
     "visit_month",
     "visit_day",
 ]
 
-cat_cols = [
+categorical_cols = [
     "visit_type",
     "department",
     "icd10_primary_code",
 ]
 
-all_cols = numeric_cols + cat_cols + [label_col]
+print("NUMERIC COLS:", numeric_cols)
+print("CAT COLS:", categorical_cols)
+
+all_cols = numeric_cols + categorical_cols + [label_col]
 
 df_spark_sel = df_spark.select(*[col(c) for c in all_cols])
 df = df_spark_sel.dropna(subset=[label_col]).toPandas()
 
+print("\n=== SAMPLE DATA ===")
 print(df.head())
-print(df[label_col].value_counts())
 
 
 # =====================================================
-# 3. Encode Categorical + Fill NaN
+# 3. PREPROCESSING (ENCODE CATEGORICAL)
 # =====================================================
+
 encoders = {}
-
-for c in cat_cols:
+for c in categorical_cols:
     le = LabelEncoder()
     df[c] = df[c].fillna("__MISSING__").astype(str)
     df[c] = le.fit_transform(df[c])
@@ -76,42 +92,47 @@ for c in cat_cols:
 for c in numeric_cols:
     df[c] = df[c].fillna(0.0)
 
-X = df[numeric_cols + cat_cols]
+X = df[numeric_cols + categorical_cols]
 y = df[label_col].astype(int)
-
-feature_names = list(X.columns)
 
 print("FEATURE MATRIX:", X.shape, " LABELS:", y.shape)
 
 
 # =====================================================
-# 4. Train-test split
+# 4. TRAIN/TEST SPLIT
 # =====================================================
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y,
+    X,
+    y,
     test_size=0.2,
     random_state=42,
     stratify=y
 )
 
-print("Train:", len(X_train), "Test:", len(X_test))
+print("Train size:", len(X_train), "Test size:", len(X_test))
 
 
 # =====================================================
-# 5. Train XGBoost Model
+# 5. HANDLE IMBALANCED FRAUD CASES
 # =====================================================
-pos_ratio = (y_train == 1).sum() / len(y_train)
-neg_ratio = (y_train == 0).sum() / len(y_train)
-scale_pos_weight = neg_ratio / pos_ratio if pos_ratio > 0 else 1.0
+positive = (y_train == 1).sum()
+negative = (y_train == 0).sum()
+scale_pos_weight = negative / positive if positive > 0 else 1
 
+print("Positive (fraud):", positive)
+print("Negative:", negative)
 print("scale_pos_weight =", scale_pos_weight)
 
+
+# =====================================================
+# 6. TRAIN XGBOOST MODEL (FRAUD-OPTIMIZED)
+# =====================================================
 model = xgb.XGBClassifier(
-    n_estimators=300,
-    max_depth=5,
-    learning_rate=0.05,
-    subsample=0.8,
-    colsample_bytree=0.8,
+    n_estimators=450,
+    max_depth=6,
+    learning_rate=0.045,
+    subsample=0.85,
+    colsample_bytree=0.85,
     objective="binary:logistic",
     eval_metric="auc",
     scale_pos_weight=scale_pos_weight,
@@ -119,6 +140,7 @@ model = xgb.XGBClassifier(
     tree_method="hist"
 )
 
+print("\n=== TRAINING MODEL ===")
 model.fit(
     X_train,
     y_train,
@@ -128,55 +150,90 @@ model.fit(
 
 
 # =====================================================
-# 6. Evaluate
+# 7. EVALUATION
 # =====================================================
-y_pred_proba = model.predict_proba(X_test)[:, 1]
-y_pred = (y_pred_proba >= 0.5).astype(int)
+y_proba = model.predict_proba(X_test)[:, 1]
+y_pred = (y_proba >= 0.5).astype(int)
 
-auc = roc_auc_score(y_test, y_pred_proba)
+auc = roc_auc_score(y_test, y_proba)
 f1 = f1_score(y_test, y_pred)
+prec = precision_score(y_test, y_pred, zero_division=0)
+rec = recall_score(y_test, y_pred, zero_division=0)
 
-print("AUC:", auc)
-print("F1 :", f1)
-print(classification_report(y_test, y_pred))
+print("\n=== MODEL PERFORMANCE ===")
+print("AUC :", auc)
+print("F1  :", f1)
+print("Precision:", prec)
+print("Recall   :", rec)
+
+print("\n=== CLASSIFICATION REPORT ===")
+print(classification_report(y_test, y_pred, zero_division=0))
 
 
 # =====================================================
-# 7. Export model to ROOT DIRECTORY
+# 8. SHAP FEATURE IMPORTANCE (EXPLAINABILITY)
 # =====================================================
-print("\n=== EXPORT ARTIFACTS TO ROOT DIRECTORY ===")
+print("=== COMPUTING SHAP VALUES ===")
 
+explainer = shap.TreeExplainer(model)
+shap_values = explainer.shap_values(X_train[:200])  # speed optimized
+
+feature_scores = dict(
+    sorted(
+        zip(X.columns, np.abs(shap_values).mean(axis=0)),
+        key=lambda kv: kv[1],
+        reverse=True
+    )
+)
+
+print("\n=== TOP FEATURES (SHAP) ===")
+for k, v in list(feature_scores.items())[:15]:
+    print(f"{k}: {v}")
+
+
+# =====================================================
+# 9. EXPORT ARTIFACTS FOR MODEL SERVING
+# =====================================================
 ROOT = "/home/cdsw"
 
-# model
+print("\n=== EXPORT MODEL + ENCODERS ===")
+
+# Model
 with open(os.path.join(ROOT, "model.pkl"), "wb") as f:
     pickle.dump(model, f)
 
-# preprocess
+# Preprocessing artifacts
 with open(os.path.join(ROOT, "preprocess.pkl"), "wb") as f:
     pickle.dump(
         {
             "numeric_cols": numeric_cols,
-            "cat_cols": cat_cols,
+            "categorical_cols": categorical_cols,
             "encoders": encoders,
-            "feature_names": feature_names,
+            "feature_importance": feature_scores,
             "label_col": label_col,
         },
         f
     )
 
-# metadata
+# Metadata
 with open(os.path.join(ROOT, "meta.json"), "w") as f:
     json.dump(
         {
-            "description": "Fraud detection model for claims",
+            "description": "Fraud detection model v2 (ICD logic + anomaly + cost + mismatch)",
+            "version": "v2",
             "algorithm": "XGBoost",
-            "version": "v1"
+            "features_used": numeric_cols + categorical_cols,
+            "performance": {
+                "auc": float(auc),
+                "f1": float(f1),
+                "precision": float(prec),
+                "recall": float(rec),
+            },
         },
         f,
         indent=2
     )
 
-print("=== MODEL + ARTIFACTS SAVED TO /home/cdsw ===")
+print("=== TRAINING COMPLETE. ARTIFACTS SAVED TO /home/cdsw ===")
 
 spark.stop()
