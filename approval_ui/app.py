@@ -69,7 +69,7 @@ def dashboard():
     cur = conn.cursor(dictionary=True)
 
     # Count total rows
-    cur.execute("SELECT COUNT(*) AS total FROM claim_header")
+    cur.execute("SELECT COUNT(*) AS total FROM claim_header WHERE status='pending' ")
     total = cur.fetchone()["total"]
 
     total_pages = math.ceil(total / limit)
@@ -82,7 +82,8 @@ def dashboard():
                department,
                total_claim_amount,
                status
-        FROM claim_header where status = 'pending'
+        FROM claim_header 
+        WHERE status='pending'
         ORDER BY claim_id DESC
         LIMIT {limit} OFFSET {offset}
     """)
