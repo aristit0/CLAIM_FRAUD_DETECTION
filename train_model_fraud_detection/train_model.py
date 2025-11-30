@@ -8,7 +8,6 @@ from sklearn.metrics import (
     roc_auc_score, f1_score, precision_score, recall_score,
     classification_report
 )
-from sklearn.preprocessing import LabelEncoder
 from category_encoders.target_encoder import TargetEncoder
 import xgboost as xgb
 import shap
@@ -33,9 +32,8 @@ df[label_col] = df[label_col].fillna(0).astype(int)
 
 
 # =====================================================
-# FEATURE SELECTION + EXTRA DERIVED FEATURES
+# FEATURES
 # =====================================================
-
 numeric_cols = [
     "patient_age",
     "total_procedure_cost",
@@ -55,7 +53,7 @@ numeric_cols = [
 
 categorical_cols = ["visit_type", "department", "icd10_primary_code"]
 
-# EXTRA FEATURE: counts
+# EXTRA — count of each section
 df["procedure_count"] = df["procedures_icd9_codes"].apply(lambda x: len(x) if isinstance(x, list) else 0)
 df["drug_count"] = df["drug_names"].apply(lambda x: len(x) if isinstance(x, list) else 0)
 df["vitamin_count"] = df["vitamin_names"].apply(lambda x: len(x) if isinstance(x, list) else 0)
@@ -64,11 +62,11 @@ numeric_cols += ["procedure_count", "drug_count", "vitamin_count"]
 
 
 # =====================================================
-# PREPROCESSING (TARGET ENCODING)
+# TARGET ENCODING CATEGORICAL
 # =====================================================
 print("=== TARGET ENCODING ===")
-
 encoders = {}
+
 for c in categorical_cols:
     te = TargetEncoder(cols=[c], smoothing=0.3)
     df[c] = df[c].fillna("__MISSING__").astype(str)
@@ -76,7 +74,7 @@ for c in categorical_cols:
     encoders[c] = te
 
 
-# Fill numeric nulls
+# Fill numeric
 for c in numeric_cols:
     df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
 
@@ -90,22 +88,17 @@ print("Final feature matrix:", X.shape)
 # TRAIN/TEST SPLIT
 # =====================================================
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y,
-    test_size=0.2,
-    random_state=42,
-    stratify=y
+    X, y, test_size=0.2, random_state=42, stratify=y
 )
 
-# class imbalance handling
 positive = (y_train == 1).sum()
 negative = (y_train == 0).sum()
 scale_pos_weight = negative / positive
-
 print("Fraud:", positive, " Normal:", negative)
 
 
 # =====================================================
-# XGBOOST IMPROVED PARAMS
+# XGBOOST — BEST SETTINGS (TUNED)
 # =====================================================
 model = xgb.XGBClassifier(
     n_estimators=600,
@@ -125,14 +118,15 @@ model = xgb.XGBClassifier(
 
 print("=== TRAINING MODEL ===")
 model.fit(
-    X_train, y_train,
+    X_train,
+    y_train,
     eval_set=[(X_train, y_train), (X_test, y_test)],
     verbose=50
 )
 
 
 # =====================================================
-# THRESHOLD OPTIMIZATION
+# OPTIMAL THRESHOLD
 # =====================================================
 y_proba = model.predict_proba(X_test)[:, 1]
 
@@ -141,8 +135,7 @@ best_f1 = 0
 best_t = 0.5
 
 for t in thresholds:
-    pred = (y_proba >= t).astype(int)
-    f1 = f1_score(y_test, pred)
+    f1 = f1_score(y_test, (y_proba >= t).astype(int))
     if f1 > best_f1:
         best_f1 = f1
         best_t = t
@@ -169,14 +162,15 @@ print(classification_report(y_test, y_pred))
 
 
 # =====================================================
-# SHAP
+# SHAP SAFE MODE (XGBoost 2.x compatible)
 # =====================================================
-print("=== SHAP (safe version) ===")
+print("=== SHAP (safe) ===")
 
-explainer = shap.Explainer(model, X_train[:200])
-shap_values = explainer(X_train[:200])
+sample_data = X_train.sample(200, random_state=42)
 
-# nilai absolute mean importance
+explainer = shap.Explainer(model, sample_data)
+shap_values = explainer(sample_data)
+
 feature_scores = dict(
     sorted(
         zip(X.columns, np.abs(shap_values.values).mean(axis=0)),
@@ -206,5 +200,5 @@ with open(os.path.join(ROOT, "preprocess.pkl"), "wb") as f:
         f
     )
 
-print("\n=== DONE ===")
+print("\n=== DONE — Model + Preprocess Saved ===")
 spark.stop()
