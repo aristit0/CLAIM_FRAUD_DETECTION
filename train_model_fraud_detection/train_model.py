@@ -164,21 +164,37 @@ print(classification_report(y_test, y_pred))
 # =====================================================
 # SHAP SAFE MODE (XGBoost 2.x compatible)
 # =====================================================
-print("=== SHAP (safe) ===")
+print("=== SHAP (KernelExplainer SAFE for XGBoost 2.x) ===")
 
-sample_data = X_train.sample(200, random_state=42)
+sample_size = min(30, len(X_train))
+background = X_train.sample(sample_size, random_state=42)
+target_sample = X_train.sample(sample_size, random_state=10)
 
-explainer = shap.Explainer(model, sample_data)
-shap_values = explainer(sample_data)
+import shap
+import numpy as np
 
+# Wrap model.predict_proba so SHAP doesn't touch sklearn model
+def model_predict(data):
+    data = np.array(data)
+    return model.predict_proba(data)[:, 1]
+
+# KernelExplainer using safe wrapper
+explainer = shap.KernelExplainer(model_predict, background.values)
+
+shap_values = explainer.shap_values(target_sample.values, nsamples=100)
+
+# calculate feature importance
 feature_scores = dict(
     sorted(
-        zip(X.columns, np.abs(shap_values.values).mean(axis=0)),
+        zip(X.columns, np.abs(shap_values).mean(axis=0)),
         key=lambda kv: kv[1],
         reverse=True
     )
 )
 
+print("=== SHAP TOP FEATURES ===")
+for k, v in list(feature_scores.items())[:10]:
+    print(f"{k}: {v}")
 
 # =====================================================
 # SAVE ARTIFACTS
