@@ -1,222 +1,261 @@
-import cml.data_v1 as cmldata
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import *
-from pyspark.sql.types import *
+#!/usr/bin/env python3
 import random
+from faker import Faker
+from datetime import datetime
+import mysql.connector
 import pandas as pd
-import numpy as np
 
-CONNECTION_NAME = "CDP-MSI"
-conn = cmldata.get_connection(CONNECTION_NAME)
-spark = conn.get_spark_session()
-print("=== START SYNTHETIC GENERATION ===")
+# ==============================
+# CONFIG
+# ==============================
+TOTAL_CLAIMS = 3000          # jumlah klaim yang mau digenerate
+FRAUD_RATIO  = 0.25          # 25% klaim fraud (untuk training label OFFLINE)
 
-# ===================================================================
-# 📌 1. Reference ICD Compatibility Dictionaries
-# ===================================================================
-ICD10_CHAPTERS = {
-    "I10": {  # Hypertension
-        "desc": "Hipertensi",
-        "procedures": ["03.31", "89.52", "90.59"],
-        "drugs": ["DRG001", "DRG002"],
-        "vitamins": ["Vit-B", "Vit-C"]
-    },
-    "J20": {  # Acute bronchitis
-        "desc": "Bronkitis Akut",
-        "procedures": ["89.52"],
-        "drugs": ["DRG010", "DRG011"],
-        "vitamins": ["Vit-C"]
-    },
-    "E11": {  # Diabetes Mellitus Type-2
-        "desc": "Diabetes Tipe 2",
-        "procedures": ["90.59"],
-        "drugs": ["DRG020", "DRG021"],
-        "vitamins": ["Vit-B"]
-    },
-    "K29": {
-        "desc": "Gastritis",
-        "procedures": ["03.31"],
-        "drugs": ["DRG030"],
-        "vitamins": ["Vit-E"]
-    },
-    "M54": {
-        "desc": "Low Back Pain",
-        "procedures": ["99.39"],
-        "drugs": ["DRG040", "DRG041"],
-        "vitamins": ["Vit-D"]
-    }
+DB_CONFIG = {
+    "host": "localhost",
+    "user": "root",
+    "password": "Admin123",
+    "database": "claimdb",
 }
 
-DEPARTMENTS = [
-    "Poli Saraf", "Poli Jantung", "Poli Anak",
-    "Poli Umum", "Poli Penyakit Dalam"
+fake = Faker("id_ID")
+
+
+# ==============================
+# HELPER: Generate NIK
+# ==============================
+def generate_nik(gender: str):
+    prov = random.randint(11, 99)
+    kab = random.randint(1, 99)
+    kec = random.randint(1, 99)
+
+    dob = fake.date_of_birth(minimum_age=18, maximum_age=65)
+
+    dd = dob.day
+    mm = dob.month
+    yy = dob.year % 100
+
+    if gender == "F":
+        dd = dd + 40
+
+    urut = random.randint(1, 9999)
+
+    nik = f"{prov:02d}{kab:02d}{kec:02d}{dd:02d}{mm:02d}{yy:02d}{urut:04d}"
+    return nik, dob
+
+
+# ==============================
+# DICTIONARIES ICD / PROCEDURE / DRUG / VITAMIN
+# ==============================
+ICD10_LIST = [
+    ("A09", "Diare dan gastroenteritis"),
+    ("J06", "Common cold"),
+    ("I10", "Hipertensi"),
+    ("E11", "Diabetes mellitus tipe 2"),
+    ("J45", "Asma"),
+    ("K29", "Gastritis"),
 ]
 
-VISIT_TYPES = ["rawat jalan", "rawat inap", "IGD"]
+ICD9_LIST = [
+    ("96.70", "Injeksi obat"),
+    ("99.04", "Transfusi darah"),
+    ("03.31", "Pemeriksaan darah"),
+    ("45.13", "Endoskopi"),
+    ("93.90", "Electrotherapy"),
+]
 
-# ===================================================================
-# 📌 2. Helper random functions
-# ===================================================================
-def rand_amount(min_val, max_val):
-    return round(random.uniform(min_val, max_val), 2)
+DRUG_LIST = [
+    ("KFA001", "Paracetamol 500 mg"),
+    ("KFA002", "Amoxicillin 500 mg"),
+    ("KFA003", "Ceftriaxone injeksi"),
+    ("KFA004", "Omeprazole 20 mg"),
+    ("KFA005", "ORS / Oralit"),
+]
 
-def pick(list_obj, n=1):
-    return random.sample(list_obj, n)
+VITAMIN_LIST = [
+    "Vitamin C 500 mg",
+    "Vitamin B Complex",
+    "Vitamin D 1000 IU",
+    "Vitamin E 400 IU",
+]
 
-# ===================================================================
-# 📌 3. Generate NORMAL claim
-# ===================================================================
-def generate_normal_claim(claim_id):
-    icd10 = random.choice(list(ICD10_CHAPTERS.keys()))
-    ref = ICD10_CHAPTERS[icd10]
 
-    patient_name = random.choice(["Ahmad", "Budi", "Siti", "Rahma", "Aulia", "Joko"])
+# ==============================
+# GENERATE SATU CLAIM (NORMAL/FRAUD)
+# ==============================
+def generate_claim():
     gender = random.choice(["M", "F"])
-    dob_year = random.randint(1960, 2010)
-    visit_date = f"2025-11-{random.randint(1, 28):02d}"
+    nik, dob = generate_nik(gender)
+    name = fake.name_male() if gender == "M" else fake.name_female()
 
-    # Costs
-    total_proc = rand_amount(50_000, 300_000)
-    total_drug = rand_amount(20_000, 200_000)
-    total_vit = rand_amount(10_000, 40_000)
-    total_claim = total_proc + total_drug + total_vit
+    address = fake.address().replace("\n", ", ")
+    phone = fake.phone_number()
+
+    visit_date = fake.date_between(start_date='-2y', end_date='today')
+    doctor = fake.name()
+    department = random.choice(["Poli Umum", "Poli Anak", "Poli Saraf", "IGD", "Poli Penyakit Dalam"])
+
+    # Diagnosis
+    dx_primary = random.choice(ICD10_LIST)
+    dx_secondary = random.choice(ICD10_LIST)
+
+    # Procedure / Drug / Vitamin yang secara default "masuk akal"
+    procedure = random.choice(ICD9_LIST)
+    drug = random.choice(DRUG_LIST)
+    vitamin = random.choice(VITAMIN_LIST)
+
+    # Biaya dasar
+    total_proc_cost = random.randint(50_000, 300_000)
+    total_drug_cost = random.randint(20_000, 150_000)
+    total_vit_cost = random.randint(10_000, 80_000)
+
+    # Flag fraud offline (untuk training)
+    is_fraud = random.random() < FRAUD_RATIO
+
+    fraud_type = None
+    if is_fraud:
+        # pilih tipe fraud
+        fraud_type = random.choice(["wrong_vitamin", "wrong_drug", "wrong_proc", "over_cost"])
+
+        if fraud_type == "wrong_vitamin":
+            # vitamin yang tidak relevan (random dari list yang tidak match)
+            vitamin = "Vitamin A 5000 IU"
+
+        elif fraud_type == "wrong_drug":
+            # obat berat / injeksi padahal diagnosa ringan
+            drug = ("KFA003", "Ceftriaxone injeksi")
+            total_drug_cost += random.randint(150_000, 300_000)
+
+        elif fraud_type == "wrong_proc":
+            # tindakan transfusi yang tidak relevan
+            procedure = ("99.04", "Transfusi darah")
+            total_proc_cost += random.randint(200_000, 400_000)
+
+        elif fraud_type == "over_cost":
+            # biaya tindakan di-markup sangat besar
+            multiplier = random.uniform(4, 10)
+            total_proc_cost = int(total_proc_cost * multiplier)
+
+    total_claim = total_proc_cost + total_drug_cost + total_vit_cost
 
     return {
-        "claim_id": claim_id,
-        "patient_nik": str(3000000000000000 + claim_id),
-        "patient_name": patient_name,
-        "patient_gender": gender,
-        "patient_dob": f"{dob_year}-01-01",
-        "patient_address": "Jl. Melati No. 10",
-        "patient_phone": "08123456789",
+        "nik": nik,
+        "name": name,
+        "gender": gender,
+        "dob": dob,
+        "address": address,
+        "phone": phone,
         "visit_date": visit_date,
-        "visit_type": random.choice(VISIT_TYPES),
-        "doctor_name": "dr. Bagus",
-        "department": random.choice(DEPARTMENTS),
-        "icd10_code": icd10,
-        "icd10_description": ref["desc"],
-        "procedures": pick(ref["procedures"], 1),
-        "drugs": pick(ref["drugs"], 1),
-        "vitamins": pick(ref["vitamins"], 1),
-        "total_procedure_cost": total_proc,
-        "total_drug_cost": total_drug,
-        "total_vitamin_cost": total_vit,
-        "total_claim_amount": total_claim,
-        "label": 0
+        "doctor": doctor,
+        "department": department,
+        "dx_primary": dx_primary,
+        "dx_secondary": dx_secondary,
+        "procedure": procedure,
+        "drug": drug,
+        "vitamin": vitamin,
+        "proc_cost": total_proc_cost,
+        "drug_cost": total_drug_cost,
+        "vit_cost": total_vit_cost,
+        "total_claim": total_claim,
+        "label_fraud": 1 if is_fraud else 0,
+        "fraud_type": fraud_type,
     }
 
-# ===================================================================
-# 📌 4. Generate FRAUD claim (several types)
-# ===================================================================
-def generate_fraud_claim(claim_id):
-    icd10 = random.choice(list(ICD10_CHAPTERS.keys()))
-    ref = ICD10_CHAPTERS[icd10]
 
-    fraud_type = random.choice(["wrong_vitamin", "wrong_drug", "wrong_proc", "over_cost"])
+# ==============================
+# INSERT KE MYSQL (TANPA fraud_label)
+# ==============================
+def insert_claim(cursor, conn, record, label_records):
+    # 1) Header
+    cursor.execute("""
+        INSERT INTO claim_header (
+            patient_nik, patient_name, patient_gender, patient_dob,
+            patient_address, patient_phone,
+            visit_date, visit_type, doctor_name, department,
+            total_procedure_cost, total_drug_cost, total_vitamin_cost, total_claim_amount
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,'rawat jalan',%s,%s,%s,%s,%s,%s)
+    """, (
+        record["nik"], record["name"], record["gender"], record["dob"],
+        record["address"], record["phone"],
+        record["visit_date"], record["doctor"], record["department"],
+        record["proc_cost"], record["drug_cost"], record["vit_cost"], record["total_claim"],
+    ))
+    conn.commit()
 
-    # Pick wrong items
-    def wrong_item(all_items, correct):
-        wrongs = [x for x in all_items if x not in correct]
-        return random.choice(wrongs) if wrongs else random.choice(all_items)
+    claim_id = cursor.lastrowid
 
-    all_procs = ["03.31", "89.52", "90.59", "99.39", "00.00"]
-    all_drugs = ["DRG001","DRG002","DRG010","DRG011","DRG020","DRG021","DRG030","DRG040","DRG041"]
-    all_vits = ["Vit-A","Vit-B","Vit-C","Vit-D","Vit-E","Vit-K"]
+    # 2) Diagnosis primary
+    cursor.execute("""
+        INSERT INTO claim_diagnosis (claim_id, icd10_code, icd10_description, is_primary)
+        VALUES (%s,%s,%s,1)
+    """, (claim_id, record["dx_primary"][0], record["dx_primary"][1]))
 
-    # base normal
-    data = generate_normal_claim(claim_id)
-    data["label"] = 1
+    # 3) Diagnosis secondary
+    cursor.execute("""
+        INSERT INTO claim_diagnosis (claim_id, icd10_code, icd10_description, is_primary)
+        VALUES (%s,%s,%s,0)
+    """, (claim_id, record["dx_secondary"][0], record["dx_secondary"][1]))
 
-    if fraud_type == "wrong_vitamin":
-        data["vitamins"] = [wrong_item(all_vits, ref["vitamins"])]
+    # 4) Procedure
+    cursor.execute("""
+        INSERT INTO claim_procedure (claim_id, icd9_code, icd9_description, quantity, procedure_date)
+        VALUES (%s,%s,%s,1,%s)
+    """, (claim_id, record["procedure"][0], record["procedure"][1], record["visit_date"]))
 
-    elif fraud_type == "wrong_drug":
-        data["drugs"] = [wrong_item(all_drugs, ref["drugs"])]
+    # 5) Drug
+    cursor.execute("""
+        INSERT INTO claim_drug (claim_id, drug_code, drug_name, dosage, frequency, route, days, cost)
+        VALUES (%s,%s,%s,'1 tablet','2x sehari','oral',3,%s)
+    """, (claim_id, record["drug"][0], record["drug"][1], record["drug_cost"]))
 
-    elif fraud_type == "wrong_proc":
-        data["procedures"] = [wrong_item(all_procs, ref["procedures"])]
+    # 6) Vitamin
+    cursor.execute("""
+        INSERT INTO claim_vitamin (claim_id, vitamin_name, dosage, days, cost)
+        VALUES (%s,%s,'1 tablet',3,%s)
+    """, (claim_id, record["vitamin"], record["vit_cost"]))
 
-    elif fraud_type == "over_cost":
-        data["total_procedure_cost"] *= random.uniform(5, 12)
-        data["total_claim_amount"] = (
-            data["total_procedure_cost"] +
-            data["total_drug_cost"] +
-            data["total_vitamin_cost"]
-        )
+    conn.commit()
 
-    return data
+    # 7) SIMPAN LABEL OFFLINE (untuk training, join via claim_id)
+    label_records.append({
+        "claim_id": claim_id,
+        "fraud_label": record["label_fraud"],
+        "fraud_type": record["fraud_type"],
+        "icd10_primary": record["dx_primary"][0],
+        "department": record["department"],
+        "visit_date": record["visit_date"].strftime("%Y-%m-%d"),
+        "total_claim_amount": record["total_claim"],
+    })
 
-# ===================================================================
-# 📌 5. Create dataset
-# ===================================================================
-NORMAL_COUNT = 1000
-FRAUD_COUNT = 300
 
-all_data = []
+# ==============================
+# MAIN
+# ==============================
+def main():
+    print(f"Generating {TOTAL_CLAIMS} synthetic claims...")
 
-claim_id = 1
-for _ in range(NORMAL_COUNT):
-    all_data.append(generate_normal_claim(claim_id))
-    claim_id += 1
-for _ in range(FRAUD_COUNT):
-    all_data.append(generate_fraud_claim(claim_id))
-    claim_id += 1
+    conn = mysql.connector.connect(**DB_CONFIG)
+    cursor = conn.cursor()
 
-df = pd.DataFrame(all_data)
-print("Generated synthetic:", df.shape)
+    label_records = []
 
-# ===================================================================
-# 6. Explode into RAW tables
-# ===================================================================
-header_df = df[[
-    "claim_id","patient_nik","patient_name","patient_gender","patient_dob",
-    "patient_address","patient_phone","visit_date","visit_type","doctor_name",
-    "department","total_procedure_cost","total_drug_cost","total_vitamin_cost",
-    "total_claim_amount"
-]]
+    for i in range(TOTAL_CLAIMS):
+        rec = generate_claim()
+        insert_claim(cursor, conn, rec, label_records)
 
-diag_df = df[[
-    "claim_id","icd10_code","icd10_description"
-]]
-diag_df["is_primary"] = 1
+        if (i + 1) % 100 == 0:
+            print(f"Inserted {i + 1} claims...")
 
-proc_records = []
-drug_records = []
-vit_records = []
+    cursor.close()
+    conn.close()
 
-for idx, row in df.iterrows():
-    for p in row["procedures"]:
-        proc_records.append([row["claim_id"], p, "Procedure Desc", 1, row["visit_date"]])
-    for d in row["drugs"]:
-        drug_records.append([row["claim_id"], d, "Drug Name", "1x", "1x", "oral", 1, rand_amount(10_000, 50_000)])
-    for v in row["vitamins"]:
-        vit_records.append([row["claim_id"], v, "1x", 1, rand_amount(10_000, 40_000)])
+    print("All claims inserted into MySQL.")
 
-proc_df = pd.DataFrame(proc_records, columns=[
-    "claim_id","icd9_code","icd9_description","quantity","procedure_date"
-])
+    # Simpan label OFFLINE untuk training
+    df_labels = pd.DataFrame(label_records)
+    df_labels.to_csv("synthetic_claim_labels.csv", index=False)
+    print("Saved training labels to synthetic_claim_labels.csv")
 
-drug_df = pd.DataFrame(drug_records, columns=[
-    "claim_id","drug_code","drug_name","dosage","frequency","route","days","cost"
-])
 
-vit_df = pd.DataFrame(vit_records, columns=[
-    "claim_id","vitamin_name","dosage","days","cost"
-])
-
-# Convert to spark
-spark_header = spark.createDataFrame(header_df)
-spark_diag = spark.createDataFrame(diag_df)
-spark_proc = spark.createDataFrame(proc_df)
-spark_drug = spark.createDataFrame(drug_df)
-spark_vit = spark.createDataFrame(vit_df)
-
-# Write to Iceberg raw tables
-spark_header.writeTo("synthetic.claim_header_raw").overwritePartitions()
-spark_diag.writeTo("synthetic.claim_diagnosis_raw").overwritePartitions()
-spark_proc.writeTo("synthetic.claim_procedure_raw").overwritePartitions()
-spark_drug.writeTo("synthetic.claim_drug_raw").overwritePartitions()
-spark_vit.writeTo("synthetic.claim_vitamin_raw").overwritePartitions()
-
-print("=== SYNTHETIC DATA GENERATED SUCCESSFULLY ===")
-spark.stop()
+if __name__ == "__main__":
+    main()
