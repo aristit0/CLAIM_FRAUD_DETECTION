@@ -2,7 +2,7 @@
 import cml.data_v1 as cmldata
 from pyspark.sql.functions import (
     col, lit, when, collect_list, first, year, month, dayofmonth, avg, stddev_pop,
-    count, size, substring, current_timestamp, concat_ws,
+    count, size, substring, current_timestamp,
     abs as spark_abs
 )
 from pyspark.sql.window import Window
@@ -11,11 +11,10 @@ from pyspark.sql import functions as F
 # ================================================================
 # 1. CONNECT TO SPARK
 # ================================================================
-CONNECTION_NAME = "CDP-MSI"
-conn = cmldata.get_connection(CONNECTION_NAME)
+conn = cmldata.get_connection("CDP-MSI")
 spark = conn.get_spark_session()
 
-print("=== START FRAUD-ENHANCED ETL (with Human Labels) ===")
+print("=== START FRAUD-ENHANCED ETL v4 ===")
 
 # ================================================================
 # 2. LOAD RAW TABLES
@@ -105,7 +104,7 @@ base = (
 )
 
 # ================================================================
-# 8. RULE-BASED ANOMALIES (legacy)
+# 8. RULE-BASED ANOMALIES
 # ================================================================
 base = base.withColumn(
     "diagnosis_procedure_mismatch",
@@ -117,7 +116,10 @@ base = base.withColumn(
     when((col("icd10_primary_code").startswith("J")) & (col("has_drug") == 0), 1).otherwise(0)
 )
 
-base = base.withColumn("cost_per_procedure", col("total_claim_amount") / (col("has_procedure") + lit(1)))
+base = base.withColumn(
+    "cost_per_procedure",
+    col("total_claim_amount") / (col("has_procedure") + lit(1))
+)
 
 base = base.withColumn(
     "cost_procedure_anomaly",
@@ -152,18 +154,18 @@ base = (
 )
 
 # ================================================================
-# 11. CLINICAL COMPATIBILITY MATRIX (using version)
+# 11. CLINICAL COMPATIBILITY MATRIX
 # ================================================================
-MATRIX_VERSION = "clinical_matrix_v2025_01"
+MATRIX_SOURCE = "internal_guideline_v1"   # UPDATED
 
 icd9_map = spark.table("iceberg_ref.icd10_icd9_map").where(
-    (col("source") == MATRIX_VERSION) & (col("is_active") == True)
+    (col("source") == MATRIX_SOURCE) & (col("is_active") == True)
 )
 drug_map = spark.table("iceberg_ref.icd10_drug_map").where(
-    (col("source") == MATRIX_VERSION) & (col("is_active") == True)
+    (col("source") == MATRIX_SOURCE) & (col("is_active") == True)
 )
 vit_map = spark.table("iceberg_ref.icd10_vitamin_map").where(
-    (col("source") == MATRIX_VERSION) & (col("is_active") == True)
+    (col("source") == MATRIX_SOURCE) & (col("is_active") == True)
 )
 
 map_proc = icd9_map.groupBy("icd10_code").agg(F.collect_set("icd9_code").alias("allowed_icd9_codes"))
@@ -210,6 +212,7 @@ base = base.withColumn(
     )
 )
 
+# Cleanup
 base = base.drop("allowed_icd9_codes", "allowed_drug_codes", "allowed_vitamins")
 
 # ================================================================
@@ -229,7 +232,7 @@ base = base.withColumn(
 )
 
 # ================================================================
-# ⭐ 13. ADD HUMAN LABEL
+# 13. HUMAN LABEL → FINAL LABEL
 # ================================================================
 base = base.withColumn(
     "human_label",
@@ -238,9 +241,6 @@ base = base.withColumn(
     .otherwise(None)
 )
 
-# ================================================================
-# ⭐ 14. FINAL LABEL (HUMAN > RULE)
-# ================================================================
 base = base.withColumn(
     "final_label",
     when(col("human_label").isNotNull(), col("human_label"))
@@ -248,15 +248,12 @@ base = base.withColumn(
 )
 
 # ================================================================
-# 15. SELECT COLUMNS
+# 14. FINAL SELECT
 # ================================================================
-feature_df = base.select(
-    "*",     # all features
-    current_timestamp().alias("created_at")
-)
+feature_df = base.withColumn("created_at", current_timestamp())
 
 # ================================================================
-# 16. WRITE TO ICEBERG (OVERWRITE PARTITIONS)
+# 15. WRITE TO ICEBERG
 # ================================================================
 (
     feature_df.writeTo("iceberg_curated.claim_feature_set")
