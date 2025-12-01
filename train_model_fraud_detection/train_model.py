@@ -9,12 +9,10 @@ from sklearn.metrics import (
     classification_report
 )
 from category_encoders.target_encoder import TargetEncoder
+from sklearn.isotonic import IsotonicRegression
 import xgboost as xgb
 import os, json, pickle
 
-# =====================================================
-# CONNECT TO SPARK
-# =====================================================
 print("=== CONNECTING TO SPARK ===")
 conn = cmldata.get_connection("CDP-MSI")
 spark = conn.get_spark_session()
@@ -28,15 +26,13 @@ df_spark = spark.sql("""
 df = df_spark.toPandas()
 print("Loaded dataset:", df.shape)
 
-# =====================================================
-# LABEL (FINAL LABEL)
-# =====================================================
 label_col = "final_label"
 df[label_col] = df[label_col].astype(int)
 
 # =====================================================
-# FEATURES (AUTO-MATCH ETL)
+# FEATURE SET v5
 # =====================================================
+
 numeric_cols = [
     "patient_age",
     "total_procedure_cost",
@@ -47,21 +43,21 @@ numeric_cols = [
     "cost_per_procedure",
     "patient_claim_count",
     "biaya_anomaly_score",
-    "visit_year",
-    "visit_month",
-    "visit_day",
+    "cost_procedure_anomaly",
+    "patient_frequency_risk",
+    "visit_year", "visit_month", "visit_day",
 
-    # CLINICAL COMPATIBILITY
+    # NEW clinical scores
     "diagnosis_procedure_score",
     "diagnosis_drug_score",
     "diagnosis_vitamin_score",
     "treatment_consistency_score",
 
-    # LEGACY RULES
-    "diagnosis_procedure_mismatch",
-    "drug_mismatch_score",
-    "cost_procedure_anomaly",
-    "patient_frequency_risk",
+    # NEW explicit mismatch flags
+    "procedure_mismatch_flag",
+    "drug_mismatch_flag",
+    "vitamin_mismatch_flag",
+    "mismatch_count",
 ]
 
 categorical_cols = [
@@ -74,19 +70,17 @@ print("Numeric:", numeric_cols)
 print("Cat:", categorical_cols)
 
 # =====================================================
-# ENCODING CATEGORICAL
+# ENCODER
 # =====================================================
-encoders = {}
 
+encoders = {}
 for c in categorical_cols:
-    df[c] = df[c].fillna("__UNKNOWN__").astype(str)  # UPDATED
+    df[c] = df[c].fillna("__UNKNOWN__").astype(str)
     te = TargetEncoder(cols=[c], smoothing=0.3)
     df[c] = te.fit_transform(df[c], df[label_col])
     encoders[c] = te
 
-# =====================================================
-# CLEAN NUMERIC
-# =====================================================
+# clean numeric
 for c in numeric_cols:
     df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
 
@@ -94,7 +88,7 @@ X = df[numeric_cols + categorical_cols]
 y = df[label_col]
 
 # =====================================================
-# TRAIN/TEST SPLIT
+# TRAIN TEST SPLIT
 # =====================================================
 X_train, X_test, y_train, y_test = train_test_split(
     X, y,
@@ -103,43 +97,54 @@ X_train, X_test, y_train, y_test = train_test_split(
     stratify=y
 )
 
-# imbalance fix
+# POSITIVE-WEIGHT
 positive = (y_train == 1).sum()
 negative = (y_train == 0).sum()
 scale_pos_weight = negative / positive
 
 # =====================================================
-# XGBOOST MODEL
+# MODEL (XGBOOST v5 IMPROVED)
 # =====================================================
+
 model = xgb.XGBClassifier(
-    n_estimators=600,
-    max_depth=7,
-    learning_rate=0.03,
+    n_estimators=700,
+    max_depth=8,
+    learning_rate=0.025,
     subsample=0.9,
     colsample_bytree=0.9,
-    min_child_weight=3,
-    gamma=0.5,
+    min_child_weight=4,
+    gamma=0.4,
     reg_alpha=0.2,
-    reg_lambda=1.5,
+    reg_lambda=1.2,
     objective="binary:logistic",
     eval_metric="auc",
     tree_method="hist",
     scale_pos_weight=scale_pos_weight,
 )
 
-print("=== TRAINING MODEL ===")
+print("=== TRAINING MODEL with early stopping ===")
 model.fit(
     X_train, y_train,
-    eval_set=[(X_train, y_train), (X_test, y_test)],
-    verbose=50
+    eval_set=[(X_test, y_test)],
+    early_stopping_rounds=60,
+    verbose=30
 )
+
+# =====================================================
+# CALIBRATION (ISOTONIC)
+# =====================================================
+y_proba_raw = model.predict_proba(X_test)[:, 1]
+
+iso = IsotonicRegression(out_of_bounds="clip")
+iso.fit(y_proba_raw, y_test)
+
+y_proba = iso.predict(y_proba_raw)
 
 # =====================================================
 # THRESHOLD OPTIMIZATION
 # =====================================================
-y_proba = model.predict_proba(X_test)[:, 1]
-thresholds = np.arange(0.1, 0.9, 0.02)
 
+thresholds = np.arange(0.1, 0.9, 0.02)
 best_t = 0.5
 best_f1 = 0
 
@@ -168,11 +173,7 @@ print(classification_report(y_test, y_pred))
 # =====================================================
 importances = model.feature_importances_
 feature_scores = dict(
-    sorted(
-        zip(X.columns, importances),
-        key=lambda x: x[1],
-        reverse=True
-    )
+    sorted(zip(X.columns, importances), key=lambda x: x[1], reverse=True)
 )
 
 # =====================================================
@@ -182,6 +183,8 @@ ROOT = "/home/cdsw"
 os.makedirs(ROOT, exist_ok=True)
 
 pickle.dump(model, open(f"{ROOT}/model.pkl", "wb"))
+pickle.dump(iso, open(f"{ROOT}/calibrator.pkl", "wb"))
+
 pickle.dump({
     "numeric_cols": numeric_cols,
     "categorical_cols": categorical_cols,
@@ -193,9 +196,9 @@ pickle.dump({
 
 with open(f"{ROOT}/meta.json", "w") as f:
     json.dump({
-        "description": "Fraud model v4 — synced with ETL v4",
+        "description": "Fraud model v5 — mismatch-aware + calibrated",
         "label_source": "human+rules",
-        "version": "v4"
+        "version": "v5"
     }, f, indent=2)
 
 print("=== TRAINING COMPLETE ===")
