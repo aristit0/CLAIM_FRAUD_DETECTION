@@ -157,9 +157,14 @@ def review(claim_id):
     cur.close()
     conn.close()
 
-    # Fetch scoring output (model v5)
+    # Fetch scoring correct model structure
     scoring_raw = requests.get(f"{BACKEND_URL}{claim_id}", verify=False).json()
-    scoring = scoring_raw["results"][0] if "results" in scoring_raw else {}
+
+    scoring = {
+        "ai_explanation": scoring_raw.get("ai_explanation"),
+        "features": scoring_raw.get("features", {}),
+        "model_output": scoring_raw.get("model_output", {}),
+    }
 
     return render_template(
         "review.html",

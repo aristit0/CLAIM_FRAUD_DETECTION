@@ -29,12 +29,11 @@
 
 <div class="max-w-7xl mx-auto py-10">
 
-    <a href="/dashboard" class="text-blue-400 hover:underline">&larr; Back to Dashboard</a>
+    <a href="/dashboard" class="text-blue-400 hover:underline">&larr; Back</a>
 
     <h1 class="text-3xl font-bold mt-4">Claim Review #{{ header.claim_id }}</h1>
 
-
-    <!-- GRID HEADER -->
+    <!-- GRID -->
     <div class="grid grid-cols-2 gap-6 mt-6">
 
         <!-- LEFT PANEL -->
@@ -43,7 +42,7 @@
 
             <p><strong>Patient:</strong> {{ header.patient_name }}</p>
             <p><strong>Gender:</strong> {{ header.patient_gender }}</p>
-            <p><strong>Date of Birth:</strong> {{ header.patient_dob }}</p>
+            <p><strong>DOB:</strong> {{ header.patient_dob }}</p>
             <p><strong>Address:</strong> {{ header.patient_address }}</p>
             <p><strong>Phone:</strong> {{ header.patient_phone }}</p>
 
@@ -64,26 +63,22 @@
             </p>
         </div>
 
-
-        <!-- RIGHT FRAUD PANEL -->
+        <!-- RIGHT PANEL -->
         <div class="bg-gray-800 p-6 rounded-xl shadow">
             <h2 class="text-xl font-semibold mb-4">Fraud Analysis</h2>
 
             {% set m = scoring.model_output %}
 
             <!-- FRAUD SCORE -->
-            <p class="mb-3">
-                <strong>Fraud Score:</strong>
-
-                <span class="text-2xl font-bold
-                    {% if m.fraud_score >= 0.5 %} text-red-400 {% else %} text-green-400 {% endif %}">
+            <p><strong>Fraud Score:</strong>
+                <span class="text-2xl font-bold {% if m.fraud_score >= 0.5 %}text-red-400{% else %}text-green-400{% endif %}">
                     {{ m.fraud_score | round(3) }}
                 </span>
             </p>
 
             <!-- FINAL FLAG -->
             <p class="mt-2">
-                <strong>Final Decision Flag:</strong>
+                <strong>Final Flag:</strong>
                 {% if m.final_flag == 1 %}
                     <span class="text-red-400 font-semibold">Potential Fraud</span>
                 {% else %}
@@ -92,14 +87,9 @@
             </p>
 
             <!-- RULE FLAG -->
-            {% if m.rule_flag is not none %}
-                <p class="mt-2">
-                    <strong>Rule Flag:</strong>
-                    <span class="text-yellow-300">{{ m.rule_flag }}</span>
-                </p>
-                <p class="text-sm text-gray-300 mt-1">
-                    {{ m.rule_reason }}
-                </p>
+            {% if m.rule_flag %}
+                <p class="mt-2"><strong>Rule Flag:</strong> {{ m.rule_flag }}</p>
+                <p class="text-sm text-gray-300">{{ m.rule_reason }}</p>
             {% endif %}
 
             <!-- SUSPICIOUS -->
@@ -116,10 +106,9 @@
             <div class="mt-6">
                 <h3 class="font-semibold mb-2">Top Contributing Features</h3>
 
+                {% set top = m.feature_importance[0].importance %}
+
                 <div class="space-y-1 max-h-48 overflow-y-auto pr-2">
-
-                    {% set top = m.feature_importance[0].importance %}
-
                     {% for item in m.feature_importance %}
                         {% set pct = ((item.importance / top) * 100) | round(2) %}
 
@@ -133,7 +122,6 @@
                             <span class="text-xs text-gray-400">{{ item.importance | round(1) }}</span>
                         </div>
                     {% endfor %}
-
                 </div>
             </div>
 
@@ -144,163 +132,106 @@
                     {{ scoring.ai_explanation }}
                 </div>
             </div>
-
-        </div> 
+        </div>
     </div>
 
-
-    <!-- DIAGNOSIS SECTION -->
+    <!-- DIAGNOSIS -->
     <div class="bg-gray-800 p-6 rounded-xl shadow mt-8">
-        <h2 class="text-xl font-semibold mb-4">Diagnosis (ICD-10)</h2>
-
+        <h2 class="text-xl font-semibold mb-4">Diagnosis</h2>
         {% if diagnosis %}
-        <table class="w-full text-left">
-            <thead class="text-gray-400">
-                <tr>
-                    <th class="p-2">ICD10</th>
-                    <th>Description</th>
-                    <th>Primary?</th>
-                </tr>
-            </thead>
-
-            {% for d in diagnosis %}
-            <tr class="border-t border-gray-700">
-                <td class="p-2">{{ d.icd10_code }}</td>
-                <td>{{ d.icd10_description }}</td>
-                <td>
-                    {% if d.is_primary == 1 %}
-                        <span class="px-2 py-1 bg-blue-600 rounded text-xs">Primary</span>
-                    {% endif %}
-                </td>
-            </tr>
-            {% endfor %}
-        </table>
+            <table class="w-full text-left">
+                <thead class="text-gray-400">
+                    <tr><th class="p-2">ICD10</th><th>Description</th><th>Primary?</th></tr>
+                </thead>
+                {% for d in diagnosis %}
+                    <tr class="border-t border-gray-700">
+                        <td class="p-2">{{ d.icd10_code }}</td>
+                        <td>{{ d.icd10_description }}</td>
+                        <td>{% if d.is_primary == 1 %}<span class="px-2 py-1 bg-blue-600 rounded text-xs">Yes</span>{% endif %}</td>
+                    </tr>
+                {% endfor %}
+            </table>
         {% else %}
             <p class="text-gray-400">No diagnosis.</p>
         {% endif %}
     </div>
 
-
     <!-- PROCEDURES -->
     <div class="bg-gray-800 p-6 rounded-xl shadow mt-8">
-        <h2 class="text-xl font-semibold mb-4">Procedures (ICD-9)</h2>
-
+        <h2 class="text-xl font-semibold mb-4">Procedures</h2>
         {% if procedures %}
-        <table class="w-full text-left">
-            <thead class="text-gray-400">
-                <tr>
-                    <th class="p-2">ICD9</th>
-                    <th>Description</th>
-                    <th>Qty</th>
-                    <th>Date</th>
-                </tr>
-            </thead>
-
-            {% for p in procedures %}
-            <tr class="border-t border-gray-700">
-                <td class="p-2">{{ p.icd9_code }}</td>
-                <td>{{ p.icd9_description }}</td>
-                <td>{{ p.quantity }}</td>
-                <td>{{ p.procedure_date }}</td>
-            </tr>
-            {% endfor %}
-        </table>
+            <table class="w-full text-left">
+                <thead class="text-gray-400">
+                    <tr><th class="p-2">ICD9</th><th>Description</th><th>Qty</th><th>Date</th></tr>
+                </thead>
+                {% for p in procedures %}
+                    <tr class="border-t border-gray-700">
+                        <td class="p-2">{{ p.icd9_code }}</td>
+                        <td>{{ p.icd9_description }}</td>
+                        <td>{{ p.quantity }}</td>
+                        <td>{{ p.procedure_date }}</td>
+                    </tr>
+                {% endfor %}
+            </table>
         {% else %}
-        <p class="text-gray-400">No procedures.</p>
+            <p class="text-gray-400">No procedures.</p>
         {% endif %}
     </div>
-
 
     <!-- DRUGS -->
     <div class="bg-gray-800 p-6 rounded-xl shadow mt-8">
         <h2 class="text-xl font-semibold mb-4">Drugs</h2>
-
         {% if drugs %}
-        <table class="w-full text-left">
-            <thead class="text-gray-400">
-                <tr>
-                    <th class="p-2">Code</th>
-                    <th>Name</th>
-                    <th>Dosage</th>
-                    <th>Days</th>
-                    <th>Cost</th>
-                </tr>
-            </thead>
-
-            {% for d in drugs %}
-            <tr class="border-t border-gray-700">
-                <td class="p-2">{{ d.drug_code }}</td>
-                <td>{{ d.drug_name }}</td>
-                <td>{{ d.dosage }}</td>
-                <td>{{ d.days }}</td>
-                <td>{{ d.cost | rupiah }}</td>
-            </tr>
-            {% endfor %}
-        </table>
+            <table class="w-full text-left">
+                <thead class="text-gray-400">
+                    <tr><th class="p-2">Code</th><th>Name</th><th>Dosage</th><th>Days</th><th>Cost</th></tr>
+                </thead>
+                {% for d in drugs %}
+                    <tr class="border-t border-gray-700">
+                        <td class="p-2">{{ d.drug_code }}</td>
+                        <td>{{ d.drug_name }}</td>
+                        <td>{{ d.dosage }}</td>
+                        <td>{{ d.days }}</td>
+                        <td>{{ d.cost | rupiah }}</td>
+                    </tr>
+                {% endfor %}
+            </table>
         {% else %}
-        <p class="text-gray-400">No drug records.</p>
+            <p class="text-gray-400">No drugs.</p>
         {% endif %}
     </div>
-
 
     <!-- VITAMINS -->
     <div class="bg-gray-800 p-6 rounded-xl shadow mt-8">
         <h2 class="text-xl font-semibold mb-4">Vitamins</h2>
-
         {% if vitamins %}
-        <table class="w-full text-left">
-            <thead class="text-gray-400">
-                <tr>
-                    <th class="p-2">Vitamin</th>
-                    <th>Dosage</th>
-                    <th>Days</th>
-                    <th>Cost</th>
-                </tr>
-            </thead>
-
-            {% for v in vitamins %}
-            <tr class="border-t border-gray-700">
-                <td class="p-2">{{ v.vitamin_name }}</td>
-                <td>{{ v.dosage }}</td>
-                <td>{{ v.days }}</td>
-                <td>{{ v.cost | rupiah }}</td>
-            </tr>
-            {% endfor %}
-        </table>
+            <table class="w-full text-left">
+                <thead class="text-gray-400">
+                    <tr><th class="p-2">Vitamin</th><th>Dosage</th><th>Days</th><th>Cost</th></tr>
+                </thead>
+                {% for v in vitamins %}
+                    <tr class="border-t border-gray-700">
+                        <td class="p-2">{{ v.vitamin_name }}</td>
+                        <td>{{ v.dosage }}</td>
+                        <td>{{ v.days }}</td>
+                        <td>{{ v.cost | rupiah }}</td>
+                    </tr>
+                {% endfor %}
+            </table>
         {% else %}
-        <p class="text-gray-400">No vitamin records.</p>
+            <p class="text-gray-400">No vitamin records.</p>
         {% endif %}
     </div>
 
-
-    <!-- ACTION BUTTONS -->
+    <!-- ACTION -->
     <div class="mt-10 text-center">
         <h2 class="text-xl font-semibold mb-4">Take Action</h2>
 
-        <button onclick="updateStatus('{{ header.claim_id }}', 'approved')"
-            class="bg-green-600 px-4 py-2 rounded hover:bg-green-700 mx-2">
-            Approve
-        </button>
-
-        <button onclick="updateStatus('{{ header.claim_id }}', 'approved_partial')"
-            class="bg-yellow-600 px-4 py-2 rounded hover:bg-yellow-700 mx-2">
-            Approve Partial
-        </button>
-
-        <button onclick="updateStatus('{{ header.claim_id }}', 'declined')"
-            class="bg-red-600 px-4 py-2 rounded hover:bg-red-700 mx-2">
-            Decline
-        </button>
-
-        <button onclick="updateStatus('{{ header.claim_id }}', 'manual_review')"
-            class="bg-blue-600 px-4 py-2 rounded hover:bg-blue-700 mx-2">
-            Manual Review
-        </button>
-
-        <button onclick="updateStatus('{{ header.claim_id }}', 'request_docs')"
-            class="bg-purple-600 px-4 py-2 rounded hover:bg-purple-700 mx-2">
-            Request Additional Document
-        </button>
+        <button onclick="updateStatus('{{ header.claim_id }}', 'approved')" class="bg-green-600 px-4 py-2 rounded">Approve</button>
+        <button onclick="updateStatus('{{ header.claim_id }}', 'approved_partial')" class="bg-yellow-600 px-4 py-2 rounded">Approve Partial</button>
+        <button onclick="updateStatus('{{ header.claim_id }}', 'declined')" class="bg-red-600 px-4 py-2 rounded">Decline</button>
+        <button onclick="updateStatus('{{ header.claim_id }}', 'manual_review')" class="bg-blue-600 px-4 py-2 rounded">Manual Review</button>
+        <button onclick="updateStatus('{{ header.claim_id }}', 'request_docs')" class="bg-purple-600 px-4 py-2 rounded">Request Docs</button>
     </div>
 
 </div>

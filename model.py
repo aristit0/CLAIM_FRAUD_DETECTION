@@ -5,185 +5,180 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 import cml.models_v1 as models
+from datetime import datetime
 
 # ======================================================
-# FILES
+# LOAD ARTIFACTS (MODEL + CALIBRATOR)
 # ======================================================
 MODEL_JSON = "model.json"
 CALIB_FILE = "calibrator.pkl"
-PREPROCESS_FILE = "preprocess.pkl"
-META_FILE = "meta.json"
 
-# ======================================================
-# LOAD ARTIFACTS SEKALI SAJA
-# ======================================================
-print("=== LOADING ARTIFACTS (Booster + Calibrator) ===")
-
-# Booster model
+print("=== LOADING MODEL ARTIFACTS ===")
 model = xgb.Booster()
 model.load_model(MODEL_JSON)
 
-# Calibrator
 with open(CALIB_FILE, "rb") as f:
     calibrator = pickle.load(f)
 
-# Preprocess metadata
-with open(PREPROCESS_FILE, "rb") as f:
-    preprocess = pickle.load(f)
-
-numeric_cols      = preprocess["numeric_cols"]
-categorical_cols  = preprocess["categorical_cols"]
-encoders          = preprocess["encoders"]
-best_threshold    = preprocess.get("best_threshold", 0.5)
-feature_importance_map = preprocess.get("feature_importance", {})
-label_col         = preprocess.get("label_col", "final_label")
-
-feature_names = numeric_cols + categorical_cols
-
-# GLOBAL FEATURE IMPORTANCE (untuk UI)
-GLOBAL_FEATURE_IMPORTANCE = [
-    {"feature": k, "importance": float(v)}
-    for k, v in sorted(feature_importance_map.items(), key=lambda kv: kv[1], reverse=True)
-]
-
-print("Loaded Booster model + calibrator + preprocess metadata.")
+print("Model + calibrator loaded.")
 
 # ======================================================
-# FEATURE DF BUILDER
+# CORE FEATURE ENGINEERING (AUTO PREPROCESSING)
 # ======================================================
-def _build_feature_df(records):
-    df = pd.DataFrame.from_records(records)
-
-    # Ensure all columns exist
-    for c in numeric_cols + categorical_cols:
-        if c not in df.columns:
-            df[c] = None
-
-    # Apply target encoder for categorical columns
-    for c in categorical_cols:
-        df[c] = df[c].astype(str).fillna("__MISSING__")
-        te = encoders[c]
-        df[c] = te.transform(df[[c]])[c]
-
-    # Numeric cleaning
-    for c in numeric_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
-
-    # Final X matrix
-    X = df[numeric_cols + categorical_cols]
-
-    # Convert to DMatrix for Booster
-    dmatrix = xgb.DMatrix(X, feature_names=feature_names)
-
-    return df, dmatrix
-
-# ======================================================
-# RULE-BASED SUSPICIOUS SIGNALS (clinical mismatch)
-# ======================================================
-def _derive_suspicious_sections(row):
-    sec = []
-
+def compute_age(dob: str, visit_date: str):
     try:
-        if row.get("diagnosis_procedure_score", 1.0) < 1.0:
-            sec.append("procedure_incompatible_with_diagnosis")
+        d1 = datetime.strptime(dob, "%Y-%m-%d").date()
+        d2 = datetime.strptime(visit_date, "%Y-%m-%d").date()
+        return d2.year - d1.year - ((d2.month, d2.day) < (d1.month, d1.day))
+    except:
+        return 0
 
-        if row.get("diagnosis_drug_score", 1.0) < 1.0:
-            sec.append("drug_incompatible_with_diagnosis")
+def cost_anomaly(total_claim, proc_cost):
+    if proc_cost == 0:
+        return 0
+    return total_claim / proc_cost
 
-        if row.get("diagnosis_vitamin_score", 1.0) < 1.0:
-            sec.append("vitamin_incompatible_with_diagnosis")
+def procedure_mismatch(icd10, procedures):
+    return 1 if len(procedures) > 0 else 0
 
-        if row.get("treatment_consistency_score", 1.0) < 0.67:
-            sec.append("overall_treatment_inconsistent")
+def drug_mismatch(icd10, drugs):
+    return 1 if len(drugs) > 0 else 0
 
-        if row.get("biaya_anomaly_score", 0.0) > 2.5:
-            sec.append("cost_anomaly")
+def vitamin_mismatch(icd10, vitamins):
+    return 1 if len(vitamins) > 0 else 0
 
-        if row.get("patient_frequency_risk", 0) == 1:
-            sec.append("high_patient_claim_frequency")
+def build_features_from_raw(raw):
+    """
+    raw input example:
+    {
+      "claim_id": 123,
+      "patient_dob": "1988-01-10",
+      "visit_date": "2025-01-15",
+      "visit_type": "rawat jalan",
+      "department": "Poli Umum",
+      "icd10_primary_code": "J10",
+      "procedures": [ {"code":"99.1","cost":50000}, ... ],
+      "drugs": [ {"code":"D001","cost":12000}, ... ],
+      "vitamins": [ {"code":"V001","cost":5000} ],
+      "total_procedure_cost": 50000,
+      "total_drug_cost": 12000,
+      "total_vitamin_cost": 5000,
+      "total_claim_amount": 67000
+    }
+    """
 
-        if row.get("cost_procedure_anomaly", 0) == 1:
-            sec.append("procedure_cost_extreme")
+    proc_cost = float(raw.get("total_procedure_cost", 0))
+    drug_cost = float(raw.get("total_drug_cost", 0))
+    vit_cost  = float(raw.get("total_vitamin_cost", 0))
+    total_claim = float(raw.get("total_claim_amount", 0))
 
-        # mismatch flags explicitly
-        if row.get("procedure_mismatch_flag", 0) == 1:
-            sec.append("procedure_mismatch")
+    procedures = raw.get("procedures", [])
+    drugs      = raw.get("drugs", [])
+    vitamins   = raw.get("vitamins", [])
 
-        if row.get("drug_mismatch_flag", 0) == 1:
-            sec.append("drug_mismatch")
+    icd10 = raw.get("icd10_primary_code")
 
-        if row.get("vitamin_mismatch_flag", 0) == 1:
-            sec.append("vitamin_mismatch")
+    # AUTO FEATURE ENGINEERING
+    features = {
+        "claim_id": raw.get("claim_id"),
+        "patient_age": compute_age(raw.get("patient_dob"), raw.get("visit_date")),
+        "visit_year": int(raw.get("visit_date")[0:4]),
+        "visit_month": int(raw.get("visit_date")[5:7]),
+        "visit_day": int(raw.get("visit_date")[8:10]),
+        "visit_type": raw.get("visit_type"),
+        "department": raw.get("department"),
+        "icd10_primary_code": icd10,
 
-    except Exception:
-        pass
+        "total_procedure_cost": proc_cost,
+        "total_drug_cost": drug_cost,
+        "total_vitamin_cost": vit_cost,
+        "total_claim_amount": total_claim,
+
+        # === AUTO RULES ===
+        "severity_score": 3 if proc_cost > 100000 else 1,
+        "cost_per_procedure": proc_cost / max(len(procedures), 1),
+        "patient_claim_count": 1,            # can be improved later
+        "biaya_anomaly_score": cost_anomaly(total_claim, proc_cost),
+        "cost_procedure_anomaly": 1 if proc_cost > 500000 else 0,
+        "patient_frequency_risk": 0,
+
+        # === CLINICAL DUMMY (bisa digantikan AI) ===
+        "diagnosis_procedure_score": 1.0,
+        "diagnosis_drug_score": 1.0,
+        "diagnosis_vitamin_score": 1.0,
+        "treatment_consistency_score": 1.0,
+
+        # === MISMATCH ===
+        "procedure_mismatch_flag": procedure_mismatch(icd10, procedures),
+        "drug_mismatch_flag": drug_mismatch(icd10, drugs),
+        "vitamin_mismatch_flag": vitamin_mismatch(icd10, vitamins),
+    }
+
+    # auto compute mismatch_count
+    features["mismatch_count"] = (
+        features["procedure_mismatch_flag"] +
+        features["drug_mismatch_flag"] +
+        features["vitamin_mismatch_flag"]
+    )
+
+    return features
+
+# ======================================================
+# AUTO SUSPICIOUS SECTION DETECTOR
+# ======================================================
+def derive_suspicious_sections(feat):
+    sec = []
+    if feat["procedure_mismatch_flag"] == 1:
+        sec.append("procedure_mismatch")
+    if feat["drug_mismatch_flag"] == 1:
+        sec.append("drug_mismatch")
+    if feat["vitamin_mismatch_flag"] == 1:
+        sec.append("vitamin_mismatch")
+
+    if feat["biaya_anomaly_score"] > 2.0:
+        sec.append("cost_anomaly")
 
     return sec
 
 # ======================================================
-# MAIN PREDICT ENDPOINT
+# MAIN CML MODEL (RAW INPUT)
 # ======================================================
 @models.cml_model
 def predict(data):
 
-    # Handle string input (manual curl)
     if isinstance(data, str):
-        try:
-            data = json.loads(data)
-        except Exception:
-            return {"error": "invalid JSON"}
+        data = json.loads(data)
 
-    if not isinstance(data, dict):
-        return {"error": "input must be JSON object"}
+    raw_records = data.get("raw_records")
+    if not raw_records:
+        return {"error": "raw_records is required"}
 
-    records = data.get("records")
-    if not isinstance(records, list) or len(records) == 0:
-        return {"error": "'records' must be a non-empty list"}
+    # FEATURE ENGINEERING otomatis
+    processed = [build_features_from_raw(r) for r in raw_records]
 
-    try:
-        # Build dataframe + DMatrix
-        df_raw, dmatrix = _build_feature_df(records)
+    df = pd.DataFrame(processed)
 
-        # Booster prediction (uncalibrated)
-        y_raw = model.predict(dmatrix)
+    # ensure numeric
+    df = df.apply(pd.to_numeric, errors="ignore").fillna(0)
 
-        # Calibrate score
-        y_proba = calibrator.predict(y_raw)
+    # XGBoost requires only numeric input → drop non-numeric
+    df_model = df.select_dtypes(include=[np.number])
 
-        # Apply learned threshold
-        y_pred = (y_proba >= float(best_threshold)).astype(int)
+    dmat = xgb.DMatrix(df_model)
 
-        results = []
+    y_raw = model.predict(dmat)
+    y_proba = calibrator.predict(y_raw)
+    y_pred  = (y_proba >= 0.5).astype(int)
 
-        for i, rec in enumerate(records):
-            row = df_raw.iloc[i]
+    results = []
+    for i, row in df.iterrows():
+        suspicious = derive_suspicious_sections(row.to_dict())
+        results.append({
+            "claim_id": row["claim_id"],
+            "fraud_score": float(y_proba[i]),
+            "final_flag": int(y_pred[i]),
+            "suspicious_sections": suspicious,
+            "features_used": row.to_dict()
+        })
 
-            rule_flag   = rec.get("rule_violation_flag")
-            rule_reason = rec.get("rule_violation_reason")
-
-            suspicious = _derive_suspicious_sections(row.to_dict())
-
-            # Combine rule engine + ML
-            if rule_flag is None:
-                final_flag = int(y_pred[i])
-                rule_flag_out = None
-            else:
-                rf = int(rule_flag)
-                final_flag = max(rf, int(y_pred[i]))
-                rule_flag_out = rf
-
-            results.append({
-                "claim_id": rec.get("claim_id"),
-                "fraud_score": float(y_proba[i]),
-                "model_flag": int(y_pred[i]),
-                "final_flag": final_flag,
-                "rule_flag": rule_flag_out,
-                "rule_reason": rule_reason,
-                "suspicious_sections": suspicious,
-                "feature_importance": GLOBAL_FEATURE_IMPORTANCE
-            })
-
-        return {"results": results}
-
-    except Exception as e:
-        return {"error": str(e)}
+    return {"results": results}

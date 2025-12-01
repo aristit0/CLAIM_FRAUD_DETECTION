@@ -1,216 +1,157 @@
 #!/usr/bin/env python3
 import os
 import json
-from datetime import datetime, date
+from datetime import datetime
+from decimal import Decimal
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 import mysql.connector
 import requests
 
 # ==============================
-# Config
+# CONFIG
 # ==============================
-
 MYSQL_CONFIG = {
-    "host": os.getenv("MYSQL_HOST", "cdpmsi.tomodachis.org"),
-    "user": os.getenv("MYSQL_USER", "cloudera"),
-    "password": os.getenv("MYSQL_PASSWORD", "T1ku$H1t4m"),
-    "database": os.getenv("MYSQL_DB", "claimdb"),
+    "host": "cdpmsi.tomodachis.org",
+    "user": "cloudera",
+    "password": "T1ku$H1t4m",
+    "database": "claimdb",
 }
 
-# CML Model Serving URL:
-CML_MODEL_URL = os.getenv(
-    "CML_MODEL_URL",
-    "https://modelservice.cloudera-ai.apps.ds.tomodachis.org/model?accessKey=YOUR_ACCESS_KEY"
-)
-CML_MODEL_TOKEN = os.getenv("CML_MODEL_TOKEN")
-
-# OpenAI API
+CML_MODEL_URL = "https://modelservice.cloudera-ai.apps.ds.tomodachis.org/model?accessKey=YOUR_ACCESS_KEY"
+CML_TOKEN = os.getenv("CML_MODEL_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 
+OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+OPENAI_MODEL = "gpt-5-mini"
 
 app = Flask(__name__)
 
-
 # ==============================
-# MySQL helper
+# MYSQL
 # ==============================
-def get_mysql_connection():
+def db():
     return mysql.connector.connect(**MYSQL_CONFIG)
 
+def to_float(x):
+    return float(x) if isinstance(x, (int, float, Decimal)) else 0.0
 
 # ==============================
-# Age calculation
+# RAW CLAIM LOADER
 # ==============================
-def compute_age(dob, visit_date):
-    if not dob or not visit_date:
-        return 0
-
-    if isinstance(dob, str):
-        dob = datetime.strptime(dob, "%Y-%m-%d").date()
-    if isinstance(visit_date, str):
-        visit_date = datetime.strptime(visit_date, "%Y-%m-%d").date()
-
-    age = visit_date.year - dob.year - (
-        (visit_date.month, visit_date.day) < (dob.month, dob.day)
-    )
-    return max(age, 0)
-
-
-# ==============================
-# Fetch data from MySQL → raw feature row
-# ==============================
-def get_claim_features(claim_id: int):
-    conn = get_mysql_connection()
+def load_raw_claim(claim_id):
+    conn = db()
     cur = conn.cursor(dictionary=True)
 
-    cur.execute("""
-        SELECT claim_id, patient_dob, visit_date, patient_name,
-               visit_type, department,
-               total_procedure_cost, total_drug_cost,
-               total_vitamin_cost, total_claim_amount
-        FROM claim_header
-        WHERE claim_id=%s
-    """, (claim_id,))
+    cur.execute("SELECT * FROM claim_header WHERE claim_id=%s", (claim_id,))
     header = cur.fetchone()
     if not header:
-        cur.close()
-        conn.close()
         return None
 
+    # diagnosis primary
     cur.execute("""
-        SELECT icd10_code, icd10_description
+        SELECT icd10_code
         FROM claim_diagnosis
         WHERE claim_id=%s
-        ORDER BY is_primary DESC, id ASC
+        ORDER BY is_primary DESC
         LIMIT 1
     """, (claim_id,))
     diag = cur.fetchone()
 
+    # procedures
+    cur.execute("SELECT code, cost FROM claim_procedure WHERE claim_id=%s", (claim_id,))
+    procedures = cur.fetchall()
+
+    # drugs
+    cur.execute("SELECT code, cost FROM claim_drug WHERE claim_id=%s", (claim_id,))
+    drugs = cur.fetchall()
+
+    # vitamins
+    cur.execute("SELECT code, cost FROM claim_vitamin WHERE claim_id=%s", (claim_id,))
+    vitamins = cur.fetchall()
+
     cur.close()
     conn.close()
 
-    visit_date = header["visit_date"]
-    if isinstance(visit_date, datetime):
-        dt = visit_date.date()
-    else:
-        dt = datetime.strptime(str(visit_date), "%Y-%m-%d").date()
-
-    feature_row = {
+    return {
         "claim_id": claim_id,
-        "patient_age": compute_age(header["patient_dob"], dt),
-        "visit_year": dt.year,
-        "visit_month": dt.month,
-        "visit_day": dt.day,
+        "patient_dob": str(header["patient_dob"]),
+        "visit_date": str(header["visit_date"]),
         "visit_type": header["visit_type"],
         "department": header["department"],
         "icd10_primary_code": diag["icd10_code"] if diag else None,
-        "total_claim_amount": float(header["total_claim_amount"] or 0),
-        "total_procedure_cost": float(header["total_procedure_cost"] or 0),
-        "total_drug_cost": float(header["total_drug_cost"] or 0),
-        "total_vitamin_cost": float(header["total_vitamin_cost"] or 0)
+        "procedures": procedures,
+        "drugs": drugs,
+        "vitamins": vitamins,
+        "total_procedure_cost": to_float(header["total_procedure_cost"]),
+        "total_drug_cost": to_float(header["total_drug_cost"]),
+        "total_vitamin_cost": to_float(header["total_vitamin_cost"]),
+        "total_claim_amount": to_float(header["total_claim_amount"]),
     }
 
-    return feature_row
-
-
 # ==============================
-# Call CML model
+# CALL CML RAW MODEL
 # ==============================
-def call_cml_model(feature_row: dict):
-    payload = {
-        "request": {
-            "records": [feature_row]
-        }
-    }
+def call_cml(raw):
+    payload = {"raw_records": [raw]}
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {CML_MODEL_TOKEN}",
+        "Authorization": f"Bearer {CML_TOKEN}",
     }
-
-    resp = requests.post(
-        CML_MODEL_URL,
-        json=payload,
-        headers=headers,
-        verify=False,
-        timeout=30,
-    )
-
-    data = resp.json()
-    return data["response"]["results"][0]
-
+    resp = requests.post(CML_MODEL_URL, json=payload, headers=headers, verify=False)
+    return resp.json()["response"]["results"][0]
 
 # ==============================
-# Call ChatGPT
+# GPT EXPLANATION
 # ==============================
-def generate_ai_explanation(claim_id: int, model_output: dict):
+def explain(claim_id, model_output):
     if not OPENAI_API_KEY:
-        return "AI explanation tidak tersedia."
-
-    fraud = model_output.get("fraud_score")
-    suspicious = model_output.get("suspicious_sections", [])
-    final_flag = model_output.get("final_flag")
+        return "AI explanation disabled."
 
     prompt = f"""
-Analisa klaim kesehatan berdasarkan output model:
+Analisa klaim ID {claim_id}.
+Fraud score: {model_output.get('fraud_score')}
+Sinyal mencurigakan: {model_output.get('suspicious_sections')}
 
-- Claim ID: {claim_id}
-- Fraud score: {fraud}
-- Suspicious: {suspicious}
-- Final Flag (0=wajar, 1=fraud): {final_flag}
-
-Buat penjelasan dua paragraf yang mudah dipahami tim klaim.
+Buatkan penjelasan 2 paragraf untuk tim klaim.
 """
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-    }
+    resp = requests.post(
+        OPENAI_URL,
+        headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+        json={
+            "model": OPENAI_MODEL,
+            "messages": [
+                {"role": "system", "content": "Kamu analis fraud kesehatan."},
+                {"role": "user", "content": prompt},
+            ],
+        }
+    )
 
-    body = {
-        "model": OPENAI_MODEL,
-        "messages": [
-            {"role": "system", "content": "Kamu adalah analis klaim asuransi kesehatan."},
-            {"role": "user", "content": prompt}
-        ]
-    }
-
-    resp = requests.post(OPENAI_CHAT_URL, json=body, headers=headers)
     return resp.json()["choices"][0]["message"]["content"]
 
+# ==============================
+# MAIN ENDPOINT
+# ==============================
+@app.route("/score/<int:claim_id>")
+def score(claim_id):
+
+    raw = load_raw_claim(claim_id)
+    if not raw:
+        return jsonify({"error": "Claim not found"}), 404
+
+    model_out = call_cml(raw)
+    ai_exp = explain(claim_id, model_out)
+
+    return jsonify({
+        "claim_id": claim_id,
+        "raw_input": raw,
+        "model_output": model_out,
+        "ai_explanation": ai_exp
+    })
 
 # ==============================
-# Main API endpoint /score/<id>
-# ==============================
-@app.route("/score/<int:claim_id>", methods=["GET"])
-def score_claim(claim_id):
-    try:
-        feature_row = get_claim_features(claim_id)
-        if not feature_row:
-            return jsonify({"error": "Claim not found"}), 404
-
-        # call CML model
-        model_output = call_cml_model(feature_row)
-
-        # AI explanation
-        ai_explanation = generate_ai_explanation(claim_id, model_output)
-
-        # final response
-        return jsonify({
-            "claim_id": claim_id,
-            "features": feature_row,
-            "model_output": model_output,
-            "ai_explanation": ai_explanation
-        })
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-# ==============================
-# RUN APP
+# RUN
 # ==============================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=2222)
