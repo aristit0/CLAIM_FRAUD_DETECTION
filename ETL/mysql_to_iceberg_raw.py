@@ -44,6 +44,7 @@ if USE_CML:
     CONN_NAME = "CDP-MSI"
     conn = cmldata.get_connection(CONN_NAME)
     spark = conn.get_spark_session()
+    spark.sparkContext.addJar("/home/cdsw/mysql.jar")
     logger.info("Spark session obtained from CML connection '%s'", CONN_NAME)
 else:
     # Fallback: create local SparkSession (adjust master & packages as needed)
