@@ -119,7 +119,7 @@ def api_get_claim():
 
     # Fetch scoring
     scoring_raw = requests.get(f"{BACKEND_URL}{claim_id}", verify=False).json()
-    model_output = scoring_raw["results"][0] if "results" in scoring_raw else {}
+    model_output = scoring_raw.get("model_output", {})
 
     return jsonify({
         "claim_id": claim_id,
@@ -160,9 +160,9 @@ def review(claim_id):
     # Fetch scoring correct model structure
     scoring_raw = requests.get(f"{BACKEND_URL}{claim_id}", verify=False).json()
 
+
     scoring = {
         "ai_explanation": scoring_raw.get("ai_explanation"),
-        "features": scoring_raw.get("features", {}),
         "model_output": scoring_raw.get("model_output", {}),
     }
 

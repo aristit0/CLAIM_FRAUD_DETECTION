@@ -69,7 +69,7 @@ def login_required(f):
 @login_required
 def submit_claim():
 
-    # Load master data from MySQL
+    # Load master data
     db = get_db()
     cursor = db.cursor()
 
@@ -88,10 +88,12 @@ def submit_claim():
     cursor.close()
     db.close()
 
-    # POST (submit claim)
+    # POST handler
     if request.method == "POST":
 
-        # Patient info
+        # -------------------------------------------
+        # Patient & Visit Info
+        # -------------------------------------------
         patient_name = request.form.get("patient_name")
         patient_nik = request.form.get("patient_nik")
         patient_dob = request.form.get("patient_dob")
@@ -99,43 +101,60 @@ def submit_claim():
         patient_phone = request.form.get("patient_phone")
         patient_address = request.form.get("patient_address")
 
-        # Visit info
         visit_date = request.form.get("visit_date")
         visit_type = request.form.get("visit_type")
         doctor_name = request.form.get("doctor_name")
         department = request.form.get("department")
 
-        # Master lookup dicts
+        # Lookup
         ICD10_MAP = {code: desc for code, desc in ICD10}
         ICD9_MAP = {code: desc for code, desc in ICD9}
         DRUG_MAP = {code: name for code, name in DRUGS}
 
-        # Medical fields
+        # -------------------------------------------
+        # Diagnosis
+        # -------------------------------------------
         dx_primary = request.form.get("diagnosis_primary")
         dx_primary_desc = ICD10_MAP[dx_primary]
 
         dx_secondary = request.form.get("diagnosis_secondary")
-        dx_secondary_desc = ICD10_MAP[dx_secondary] if dx_secondary else None
+        dx_secondary_desc = ICD10_MAP.get(dx_secondary) if dx_secondary else None
 
-        px_code = request.form.get("procedure")
-        px_desc = ICD9_MAP[px_code]
+        # -------------------------------------------
+        # Multi Procedures
+        # -------------------------------------------
+        px_codes = request.form.getlist("procedure_code[]")
+        px_costs = request.form.getlist("procedure_cost[]")
 
-        drug_code = request.form.get("drug_code")
-        drug_name = DRUG_MAP[drug_code]
-        drug_cost = float(request.form.get("drug_cost") or 0)
+        total_proc_cost = sum([float(x) for x in px_costs if x])
 
-        vitamin_name = request.form.get("vitamin_name")
-        vitamin_cost = float(request.form.get("vitamin_cost") or 0)
+        # -------------------------------------------
+        # Multi Drugs
+        # -------------------------------------------
+        drug_codes = request.form.getlist("drug_code[]")
+        drug_costs = request.form.getlist("drug_cost[]")
 
-        # Costs
-        proc_cost = float(request.form.get("procedure_cost") or 0)
-        total_claim = proc_cost + drug_cost + vitamin_cost
+        total_drug_cost = sum([float(x) for x in drug_costs if x])
 
-        # Insert into DB
+        # -------------------------------------------
+        # Multi Vitamins
+        # -------------------------------------------
+        vitamin_names = request.form.getlist("vitamin_name[]")
+        vitamin_costs = request.form.getlist("vitamin_cost[]")
+
+        total_vitamin_cost = sum([float(x) for x in vitamin_costs if x])
+
+        # -------------------------------------------
+        # TOTAL CLAIM
+        # -------------------------------------------
+        total_claim = total_proc_cost + total_drug_cost + total_vitamin_cost
+
+        # -------------------------------------------
+        # INSERT HEADER
+        # -------------------------------------------
         db = get_db()
         cursor = db.cursor()
 
-        # Claim header
         cursor.execute("""
             INSERT INTO claim_header (
                 patient_nik, patient_name, patient_gender, patient_dob,
@@ -143,53 +162,65 @@ def submit_claim():
                 visit_date, visit_type, doctor_name, department,
                 total_procedure_cost, total_drug_cost, total_vitamin_cost,
                 total_claim_amount, status
-            )
-            VALUES (%s,%s,%s,%s,%s,%s,
-                    %s,%s,%s,%s,
-                    %s,%s,%s,%s,'pending')
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'pending')
         """, (
             patient_nik, patient_name, patient_gender, patient_dob,
             patient_address, patient_phone,
             visit_date, visit_type, doctor_name, department,
-            proc_cost, drug_cost, vitamin_cost, total_claim
+            total_proc_cost, total_drug_cost, total_vitamin_cost,
+            total_claim
         ))
 
         db.commit()
         claim_id = cursor.lastrowid
 
-        # Primary DX
+        # -------------------------------------------
+        # INSERT DIAGNOSIS
+        # -------------------------------------------
         cursor.execute("""
             INSERT INTO claim_diagnosis (claim_id, icd10_code, icd10_description, is_primary)
             VALUES (%s,%s,%s,1)
         """, (claim_id, dx_primary, dx_primary_desc))
 
-        # Secondary DX
         if dx_secondary:
             cursor.execute("""
                 INSERT INTO claim_diagnosis (claim_id, icd10_code, icd10_description, is_primary)
                 VALUES (%s,%s,%s,0)
             """, (claim_id, dx_secondary, dx_secondary_desc))
 
-        # Procedure
-        cursor.execute("""
-            INSERT INTO claim_procedure (claim_id, icd9_code, icd9_description, quantity, procedure_date)
-            VALUES (%s,%s,%s,1,%s)
-        """, (claim_id, px_code, px_desc, visit_date))
+        # -------------------------------------------
+        # INSERT PROCEDURES
+        # -------------------------------------------
+        for code, cost in zip(px_codes, px_costs):
+            cost = float(cost)
+            cursor.execute("""
+                INSERT INTO claim_procedure (
+                    claim_id, icd9_code, icd9_description, quantity, procedure_date, cost
+                ) VALUES (%s,%s,%s,1,%s,%s)
+            """, (claim_id, code, ICD9_MAP[code], visit_date, cost))
 
-        # Drug
-        cursor.execute("""
-            INSERT INTO claim_drug (
-                claim_id, drug_code, drug_name, dosage, frequency,
-                route, days, cost
-            )
-            VALUES (%s,%s,%s,'1 tablet','2x sehari','oral',1,%s)
-        """, (claim_id, drug_code, drug_name, drug_cost))
+        # -------------------------------------------
+        # INSERT DRUGS
+        # -------------------------------------------
+        for code, cost in zip(drug_codes, drug_costs):
+            cost = float(cost)
+            cursor.execute("""
+                INSERT INTO claim_drug (
+                    claim_id, drug_code, drug_name, dosage, frequency,
+                    route, days, cost
+                ) VALUES (%s,%s,%s,'1 unit','1x','oral',1,%s)
+            """, (claim_id, code, DRUG_MAP[code], cost))
 
-        # Vitamin
-        cursor.execute("""
-            INSERT INTO claim_vitamin (claim_id, vitamin_name, dosage, days, cost)
-            VALUES (%s,%s,'1 tablet',1,%s)
-        """, (claim_id, vitamin_name, vitamin_cost))
+        # -------------------------------------------
+        # INSERT VITAMINS
+        # -------------------------------------------
+        for name, cost in zip(vitamin_names, vitamin_costs):
+            cost = float(cost)
+            cursor.execute("""
+                INSERT INTO claim_vitamin (
+                    claim_id, vitamin_name, dosage, days, cost
+                ) VALUES (%s,%s,'1 unit',1,%s)
+            """, (claim_id, name, cost))
 
         db.commit()
         cursor.close()
@@ -201,12 +232,10 @@ def submit_claim():
             ICD10=ICD10, ICD9=ICD9, DRUGS=DRUGS, VITAMINS=VITAMINS
         )
 
-    # GET — render form
     return render_template(
         "submit_claim.html",
         ICD10=ICD10, ICD9=ICD9, DRUGS=DRUGS, VITAMINS=VITAMINS
     )
-
 
 # -----------------------------------
 # LIST CLAIMS

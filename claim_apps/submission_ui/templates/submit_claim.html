@@ -2,7 +2,7 @@
 {% block content %}
 
 <div class="card p-4 shadow-sm">
-    <h4 class="mb-3">Submit Claim (UI v2)</h4>
+    <h4 class="mb-3">Submit Claim (UI v3 – Dynamic Rows)</h4>
 
     {% if msg %}
     <div class="alert alert-success">{{ msg }}</div>
@@ -10,6 +10,9 @@
 
     <form method="POST">
 
+        <!-- ========================= -->
+        <!-- Data Pasien -->
+        <!-- ========================= -->
         <h5>Data Pasien</h5>
         <div class="row">
             <div class="col-md-6 mb-3">
@@ -50,6 +53,9 @@
 
         <hr>
 
+        <!-- ========================= -->
+        <!-- Data Kunjungan -->
+        <!-- ========================= -->
         <h5>Data Kunjungan</h5>
 
         <div class="row">
@@ -88,8 +94,10 @@
 
         <hr>
 
-        <h5>Data Medis</h5>
-
+        <!-- ========================= -->
+        <!-- Diagnosis -->
+        <!-- ========================= -->
+        <h5>Diagnosis</h5>
         <div class="mb-3">
             <label>Diagnosis Utama (ICD-10)</label>
             <select class="form-control" name="diagnosis_primary" required id="dx_primary">
@@ -109,73 +117,74 @@
             </select>
         </div>
 
-        <div class="mb-3">
-            <label>Tindakan (ICD-9)</label>
-            <select class="form-control" name="procedure" required id="px_code">
-                {% for code, desc in ICD9 %}
-                <option value="{{ code }}">{{ code }} - {{ desc }}</option>
-                {% endfor %}
-            </select>
-        </div>
+        <hr>
+
+        <!-- ========================= -->
+        <!-- Tindakan (Multiple Rows) -->
+        <!-- ========================= -->
+        <h5>Tindakan (ICD-9)</h5>
+
+        <table class="table table-bordered" id="tbl_procedures">
+            <thead>
+                <tr>
+                    <th>ICD-9 Code</th>
+                    <th>Cost</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+
+        <button type="button" class="btn btn-secondary mt-2" onclick="addProcedureRow()">+ Add Procedure</button>
 
         <hr>
 
+        <!-- ========================= -->
+        <!-- Obat (Multiple Rows) -->
+        <!-- ========================= -->
         <h5>Obat</h5>
 
-        <div class="row">
-            <div class="col-md-6 mb-3">
-                <label>Kode Obat</label>
-                <select class="form-control" name="drug_code" id="drug_code">
-                    {% for code, name in DRUGS %}
-                    <option value="{{ code }}">{{ code }} - {{ name }}</option>
-                    {% endfor %}
-                </select>
-            </div>
+        <table class="table table-bordered" id="tbl_drugs">
+            <thead>
+                <tr>
+                    <th>Drug Code</th>
+                    <th>Cost</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
 
-            <div class="col-md-6 mb-3">
-                <label>Biaya Obat</label>
-                <input type="number" name="drug_cost" class="form-control" id="drug_cost" placeholder="0">
-            </div>
-        </div>
+        <button type="button" class="btn btn-secondary mt-2" onclick="addDrugRow()">+ Add Drug</button>
 
         <hr>
 
+        <!-- ========================= -->
+        <!-- Vitamin (Multiple Rows) -->
+        <!-- ========================= -->
         <h5>Vitamin</h5>
 
-        <div class="row">
-            <div class="col-md-6 mb-3">
-                <label>Vitamin</label>
-                <select class="form-control" name="vitamin_name" id="vitamin_name">
-                    {% for v in VITAMINS %}
-                    <option>{{ v }}</option>
-                    {% endfor %}
-                </select>
-            </div>
+        <table class="table table-bordered" id="tbl_vitamins">
+            <thead>
+                <tr>
+                    <th>Vitamin</th>
+                    <th>Cost</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
 
-            <div class="col-md-6 mb-3">
-                <label>Biaya Vitamin</label>
-                <input type="number" name="vitamin_cost" class="form-control" id="vitamin_cost" placeholder="0">
-            </div>
-        </div>
+        <button type="button" class="btn btn-secondary mt-2" onclick="addVitaminRow()">+ Add Vitamin</button>
 
         <hr>
 
-        <h5>Biaya Tindakan</h5>
-
-        <div class="mb-3">
-            <label>Biaya Prosedur</label>
-            <input type="number" class="form-control" name="procedure_cost" id="procedure_cost" required>
-        </div>
-
-        <hr>
-
-        <!-- ============================================================ -->
-        <!-- AUTO-FILL BUTTONS -->
-        <!-- ============================================================ -->
-
+        <!-- ========================= -->
+        <!-- Auto-fill Buttons -->
+        <!-- ========================= -->
         <div class="d-flex gap-2 mb-3">
             <button type="button" class="btn btn-success w-50" onclick="fillNormal();">Auto-Fill Normal</button>
-            <button type="button" class="btn btn-danger w-50" onclick="fillFraud();">Auto-Fill Fraud (Tindakan Tidak Relevan)</button>
+            <button type="button" class="btn btn-danger w-50" onclick="fillFraud();">Auto-Fill Fraud</button>
         </div>
 
         <button class="btn btn-primary w-100">Submit Claim</button>
@@ -183,119 +192,133 @@
     </form>
 </div>
 
-<!-- ============================================================ -->
-<!-- JAVASCRIPT AUTO-FILL SECTION (FIXED & DYNAMIC) -->
-<!-- ============================================================ -->
+
+<!-- ========================================================= -->
+<!-- SCRIPT SECTION – DYNAMIC ROWS + AUTOFILL LOGIC -->
+<!-- ========================================================= -->
 <script>
-    function rand(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+function rand(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
-    // Convert Jinja list → JS arrays
-    const ICD10 = JSON.parse(`{{ ICD10|tojson|safe }}`);
-    const ICD9 = JSON.parse(`{{ ICD9|tojson|safe }}`);
-    const DRUGS = JSON.parse(`{{ DRUGS|tojson|safe }}`);
-    const VITAMINS = JSON.parse(`{{ VITAMINS|tojson|safe }}`);
+const ICD10 = JSON.parse(`{{ ICD10|tojson|safe }}`);
+const ICD9  = JSON.parse(`{{ ICD9|tojson|safe }}`);
+const DRUGS = JSON.parse(`{{ DRUGS|tojson|safe }}`);
+const VITAMINS = JSON.parse(`{{ VITAMINS|tojson|safe }}`);
 
-    /* ==========================================================
-       AUTO-DETECT VALUES FROM DROPDOWN
-    ========================================================== */
+// -------------------------------
+// Add/remove dynamic procedure row
+// -------------------------------
+function addProcedureRow(code="", cost="") {
+    let row = `
+    <tr>
+        <td>
+            <select name="procedure_code[]" class="form-control">
+                ${ICD9.map(x => `<option value="${x[0]}" ${x[0]==code?'selected':''}>${x[0]} - ${x[1]}</option>`).join("")}
+            </select>
+        </td>
+        <td><input type="number" name="procedure_cost[]" class="form-control" value="${cost}"></td>
+        <td><button class="btn btn-danger" type="button" onclick="this.closest('tr').remove()">X</button></td>
+    </tr>`;
+    document.querySelector("#tbl_procedures tbody").insertAdjacentHTML("beforeend", row);
+}
 
-    // Ambil ICD10 yang dimulai dengan "J06"
-    let ICD10_J06 = ICD10.find(x => x[0].startsWith("J06"));
-    ICD10_J06 = ICD10_J06 ? ICD10_J06[0] : ICD10[0][0];   // fallback
+// -------------------------------
+// Add/remove dynamic drug row
+// -------------------------------
+function addDrugRow(code="", cost="") {
+    let row = `
+    <tr>
+        <td>
+            <select name="drug_code[]" class="form-control">
+                ${DRUGS.map(x => `<option value="${x[0]}" ${x[0]==code?'selected':''}>${x[0]} - ${x[1]}</option>`).join("")}
+            </select>
+        </td>
+        <td><input type="number" name="drug_cost[]" class="form-control" value="${cost}"></td>
+        <td><button class="btn btn-danger" type="button" onclick="this.closest('tr').remove()">X</button></td>
+    </tr>`;
+    document.querySelector("#tbl_drugs tbody").insertAdjacentHTML("beforeend", row);
+}
 
-    // Ambil procedure pertama yang paling mirip untuk J06 (gunakan pattern)
-    let PROCEDURE_J06 = ICD9.find(x =>
-        x[1].toLowerCase().includes("injeksi") ||
-        x[1].toLowerCase().includes("nebul")
-    );
-    PROCEDURE_J06 = PROCEDURE_J06 ? PROCEDURE_J06[0] : ICD9[0][0];
+// -------------------------------
+// Add/remove dynamic vitamin row
+// -------------------------------
+function addVitaminRow(name="", cost="") {
+    let row = `
+    <tr>
+        <td>
+            <select name="vitamin_name[]" class="form-control">
+                ${VITAMINS.map(v => `<option ${v==name?'selected':''}>${v}</option>`).join("")}
+            </select>
+        </td>
+        <td><input type="number" name="vitamin_cost[]" class="form-control" value="${cost}"></td>
+        <td><button class="btn btn-danger" type="button" onclick="this.closest('tr').remove()">X</button></td>
+    </tr>`;
+    document.querySelector("#tbl_vitamins tbody").insertAdjacentHTML("beforeend", row);
+}
 
-    // Ambil paracetamol otomatis
-    let DRUG_J06 = DRUGS.find(x =>
-        x[1].toLowerCase().includes("paracetamol")
-    );
-    DRUG_J06 = DRUG_J06 ? DRUG_J06[0] : DRUGS[0][0];
+// =======================================================
+// AUTO-FILL: Normal Case
+// =======================================================
+function fillNormal() {
 
-    // Vitamin valid = Vitamin C (jika ada)
-    let VALID_VIT_J06 = VITAMINS.find(v =>
-        v.toLowerCase().includes("vitamin c")
-    );
-    VALID_VIT_J06 = VALID_VIT_J06 || VITAMINS[0];
+    document.querySelector("input[name='patient_name']").value = "Budi Santoso";
+    document.querySelector("input[name='patient_nik']").value = "3174091501800004";
+    document.querySelector("input[name='patient_dob']").value = "1989-01-20";
+    document.querySelector("select[name='patient_gender']").value = "M";
+    document.querySelector("input[name='patient_phone']").value = "081234567810";
+    document.querySelector("input[name='patient_address']").value = "Jl. Merdeka No.100 Bandung";
 
-    // Vitamin invalid = semua kecuali vitamin C
-    const INVALID_VIT_J06 = VITAMINS.filter(v =>
-        !v.toLowerCase().includes("vitamin c")
-    );
+    document.querySelector("input[name='visit_date']").value = "2025-02-11";
+    document.querySelector("select[name='visit_type']").value = "rawat jalan";
+    document.querySelector("input[name='doctor_name']").value = "Dr. Rina";
+    document.querySelector("select[name='department']").value = "Poli Umum";
 
-    /* ==========================================================
-       AUTO-FILL NORMAL
-    ========================================================== */
-    function fillNormal() {
+    document.getElementById("dx_primary").value = "J06.9";
 
-        document.querySelector("input[name='patient_name']").value = "Budi Santoso";
-        document.querySelector("input[name='patient_nik']").value = "3174091501800004";
-        document.querySelector("input[name='patient_dob']").value = "1980-01-15";
-        document.querySelector("select[name='patient_gender']").value = "M";
-        document.querySelector("input[name='patient_phone']").value = "081234567890";
-        document.querySelector("input[name='patient_address']").value = "Jl. Merdeka No.10 Jakarta";
+    // Reset tables
+    document.querySelector("#tbl_procedures tbody").innerHTML = "";
+    document.querySelector("#tbl_drugs tbody").innerHTML = "";
+    document.querySelector("#tbl_vitamins tbody").innerHTML = "";
 
-        document.querySelector("input[name='visit_date']").value = "2025-01-02";
-        document.querySelector("select[name='visit_type']").value = "rawat jalan";
-        document.querySelector("input[name='doctor_name']").value = "Dr. Ratna Sari";
-        document.querySelector("select[name='department']").value = "Poli Umum";
+    // Add clean entries
+    addProcedureRow("89.0", 45000);
+    addDrugRow("PARA500", 15000);
+    addVitaminRow("VITC99", 5000);
+}
 
-        // Diagnosis VALID
-        document.getElementById("dx_primary").value = ICD10_J06;
+// =======================================================
+// AUTO-FILL: Fraud Case (matching CML test input)
+// =======================================================
+function fillFraud() {
 
-        // Procedure VALID
-        document.getElementById("px_code").value = PROCEDURE_J06;
+    document.querySelector("input[name='patient_name']").value = "Maya Pratiwi";
+    document.querySelector("input[name='patient_nik']").value = "3175024302759999";
+    document.querySelector("input[name='patient_dob']").value = "1988-09-14";
+    document.querySelector("select[name='patient_gender']").value = "F";
+    document.querySelector("input[name='patient_phone']").value = "08129822222";
+    document.querySelector("input[name='patient_address']").value = "Jl. Sudirman No.88 Bekasi";
 
-        // Drug VALID
-        document.getElementById("drug_code").value = DRUG_J06;
-        document.getElementById("drug_cost").value = 50000;
+    document.querySelector("input[name='visit_date']").value = "2025-02-08";
+    document.querySelector("select[name='visit_type']").value = "rawat jalan";
+    document.querySelector("input[name='doctor_name']").value = "Dr. Hartono";
+    document.querySelector("select[name='department']").value = "Poli Umum";
 
-        // Vitamin VALID
-        document.getElementById("vitamin_name").value = VALID_VIT_J06;
-        document.getElementById("vitamin_cost").value = 20000;
+    document.getElementById("dx_primary").value = "J06.9";
 
-        // Biaya tindakan
-        document.getElementById("procedure_cost").value = 80000;
-    }
+    // Reset first
+    document.querySelector("#tbl_procedures tbody").innerHTML = "";
+    document.querySelector("#tbl_drugs tbody").innerHTML = "";
+    document.querySelector("#tbl_vitamins tbody").innerHTML = "";
 
-    /* ==========================================================
-       AUTO-FILL FRAUD (Vitamin mismatch)
-    ========================================================== */
-    function fillFraud() {
+    // Fraud multi-row (same as CML example)
+    addProcedureRow("89.0", 75000);
+    addProcedureRow("99.1", 250000);
 
-        document.querySelector("input[name='patient_name']").value = "Siti Rahmawati";
-        document.querySelector("input[name='patient_nik']").value = "3175024302750006";
-        document.querySelector("input[name='patient_dob']").value = "1975-02-13";
-        document.querySelector("select[name='patient_gender']").value = "F";
-        document.querySelector("input[name='patient_phone']").value = "081298765432";
-        document.querySelector("input[name='patient_address']").value = "Jl. Mawar No.55 Bekasi";
+    addDrugRow("PARA500", 30000);
+    addDrugRow("ABX-99", 150000);
 
-        document.querySelector("input[name='visit_date']").value = "2025-01-03";
-        document.querySelector("select[name='visit_type']").value = "rawat jalan";
-        document.querySelector("input[name='doctor_name']").value = "Dr. Wibisana";
-        document.querySelector("select[name='department']").value = "Poli Saraf";
-
-        // Diagnosis VALID
-        document.getElementById("dx_primary").value = ICD10_J06;
-
-        // Procedure VALID
-        document.getElementById("px_code").value = PROCEDURE_J06;
-
-        // Obat VALID
-        document.getElementById("drug_code").value = DRUG_J06;
-        document.getElementById("drug_cost").value = 60000;
-
-        // Vitamin INVALID
-        document.getElementById("vitamin_name").value = rand(INVALID_VIT_J06);
-        document.getElementById("vitamin_cost").value = 45000;
-
-        // Prosedur cost tetap normal
-        document.getElementById("procedure_cost").value = 85000;
-    }
+    addVitaminRow("VITC99", 50000);
+    addVitaminRow("VITB12", 90000);
+}
 </script>
 
 {% endblock %}
