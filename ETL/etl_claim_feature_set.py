@@ -233,6 +233,41 @@ base = base.withColumn(
 )
 
 # ================================================================
+# 13b. LEGACY RULE FIELDS (BACKWARD COMPAT)
+# ================================================================
+base = (
+    base
+    # wariskan langsung dari skor baru
+    .withColumn("tindakan_validity_score", col("diagnosis_procedure_score"))
+    .withColumn("obat_validity_score", col("diagnosis_drug_score"))
+    .withColumn("vitamin_relevance_score", col("diagnosis_vitamin_score"))
+
+    # legacy mismatch fields berbasis flag baru
+    .withColumn(
+        "diagnosis_procedure_mismatch",
+        when(col("procedure_mismatch_flag") == 1, lit(1.0)).otherwise(lit(0.0))
+    )
+    .withColumn(
+        "drug_mismatch_score",
+        when(col("drug_mismatch_flag") == 1, lit(1.0)).otherwise(lit(0.0))
+    )
+
+    # reason sederhana (boleh dimodif nanti)
+    .withColumn(
+        "rule_violation_reason",
+        F.when(col("rule_violation_flag") == 0, lit(None).cast("string"))
+         .otherwise(
+             F.concat_ws(
+                 "; ",
+                 F.when(col("mismatch_count") > 0, lit("CLINICAL_MISMATCH")),
+                 F.when(col("biaya_anomaly_score") > 2.5, lit("COST_OUTLIER")),
+                 F.when(col("patient_frequency_risk") == 1, lit("HIGH_FREQUENCY_PATIENT"))
+             )
+         )
+    )
+)
+
+# ================================================================
 # 14. FINAL SELECT
 # ================================================================
 base = base.withColumn("created_at", current_timestamp())
