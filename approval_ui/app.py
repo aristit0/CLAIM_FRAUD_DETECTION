@@ -68,8 +68,7 @@ def dashboard():
     conn = db()
     cur = conn.cursor(dictionary=True)
 
-    # Count total rows
-    cur.execute("SELECT COUNT(*) AS total FROM claim_header WHERE status='pending' ")
+    cur.execute("SELECT COUNT(*) AS total FROM claim_header WHERE status='pending'")
     total = cur.fetchone()["total"]
 
     total_pages = math.ceil(total / limit)
@@ -118,15 +117,14 @@ def api_get_claim():
     if not header:
         return jsonify({"error": "Claim not found"}), 404
 
-    # call scoring backend
-    scoring = requests.get(f"{BACKEND_URL}{claim_id}", verify=False).json()
+    # Fetch scoring
+    scoring_raw = requests.get(f"{BACKEND_URL}{claim_id}", verify=False).json()
+    model_output = scoring_raw["results"][0] if "results" in scoring_raw else {}
 
     return jsonify({
         "claim_id": claim_id,
         "header": header,
-        "model_output": scoring,
-        "features": scoring.get("features"),
-        "ai_explanation": scoring.get("explanation", "-")
+        "model_output": model_output
     })
 
 
@@ -159,7 +157,9 @@ def review(claim_id):
     cur.close()
     conn.close()
 
-    scoring = requests.get(f"{BACKEND_URL}{claim_id}", verify=False).json()
+    # Fetch scoring output (model v5)
+    scoring_raw = requests.get(f"{BACKEND_URL}{claim_id}", verify=False).json()
+    scoring = scoring_raw["results"][0] if "results" in scoring_raw else {}
 
     return render_template(
         "review.html",

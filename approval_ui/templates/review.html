@@ -72,35 +72,64 @@
             <!-- FRAUD SCORE -->
             <p class="mb-3">
                 <strong>Fraud Score:</strong>
-                {% set score = scoring.model_output.fraud_score %}
+
+                {% set score = scoring.fraud_score %}
                 <span class="text-2xl font-bold
                     {% if score >= 0.5 %} text-red-400 {% else %} text-green-400 {% endif %}">
                     {{ score|round(3) }}
                 </span>
             </p>
 
+            <!-- FINAL FLAG -->
+            <p class="mt-2">
+                <strong>Final Decision Flag:</strong>
+                {% if scoring.final_flag == 1 %}
+                    <span class="text-red-400 font-semibold">Potential Fraud</span>
+                {% else %}
+                    <span class="text-green-400 font-semibold">Normal</span>
+                {% endif %}
+            </p>
+
+            <!-- RULE FLAG -->
+            {% if scoring.rule_flag is not none %}
+                <p class="mt-2">
+                    <strong>Rule Flag:</strong>
+                    <span class="text-yellow-300">{{ scoring.rule_flag }}</span>
+                </p>
+
+                <p class="text-sm text-gray-300 mt-1">{{ scoring.rule_reason }}</p>
+            {% endif %}
+
             <!-- SUSPICIOUS -->
-            <p class="mb-2"><strong>Suspicious Sections:</strong></p>
+            <p class="mt-4 mb-2"><strong>Suspicious Sections:</strong></p>
             <div class="flex flex-wrap gap-2">
-                {% for s in scoring.model_output.suspicious_sections %}
+                {% for s in scoring.suspicious_sections %}
                     <span class="px-2 py-1 bg-red-700 rounded text-sm">{{ s }}</span>
                 {% else %}
                     <span class="text-gray-400">None</span>
                 {% endfor %}
             </div>
 
-            <!-- RULE VIOLATION -->
-            <p class="mt-4"><strong>Rule Violation:</strong></p>
-            <div class="bg-gray-700 p-3 rounded text-gray-200 text-sm">
-                {{ scoring.model_output.rule_violations }}
+            <!-- FEATURE IMPORTANCE -->
+            <div class="mt-6">
+                <h3 class="font-semibold mb-2">Top Contributing Features</h3>
+
+                <div class="space-y-1 max-h-48 overflow-y-auto pr-2">
+                {% for item in scoring.feature_importance %}
+                    <div class="flex items-center gap-2">
+                        <span class="w-48 text-sm">{{ item.feature }}</span>
+                        <div class="flex-1 bg-gray-700 rounded h-2">
+                            <div class="bg-blue-400 h-2 rounded"
+                                 style="width: {{ (item.importance / scoring.feature_importance[0].importance) * 100 }}%">
+                            </div>
+                        </div>
+                        <span class="text-xs text-gray-400">{{ item.importance|round(1) }}</span>
+                    </div>
+                {% endfor %}
+                </div>
             </div>
 
-            <!-- EXPLANATION -->
-            <p class="mt-4"><strong>AI Explanation:</strong></p>
-            <div class="bg-gray-700 p-3 rounded mt-1 text-gray-200 whitespace-pre-line text-sm">
-                {{ scoring.ai_explanation }}
-            </div>
-        </div>
+        </div> <!-- END RIGHT PANEL -->
     </div>
 
 
