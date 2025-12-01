@@ -5,180 +5,232 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 import cml.models_v1 as models
-from datetime import datetime
+from datetime import datetime, date
 
-# ======================================================
-# LOAD ARTIFACTS (MODEL + CALIBRATOR)
-# ======================================================
+# ================================================================
+# LOAD ARTIFACTS
+# ================================================================
 MODEL_JSON = "model.json"
 CALIB_FILE = "calibrator.pkl"
+PREPROCESS_FILE = "preprocess.pkl"
+META_FILE = "meta.json"
 
 print("=== LOADING MODEL ARTIFACTS ===")
-model = xgb.Booster()
-model.load_model(MODEL_JSON)
 
+# XGBoost Booster
+booster = xgb.Booster()
+booster.load_model(MODEL_JSON)
+
+# Calibrator
 with open(CALIB_FILE, "rb") as f:
     calibrator = pickle.load(f)
 
-print("Model + calibrator loaded.")
+# Preprocess metadata
+with open(PREPROCESS_FILE, "rb") as f:
+    preprocess = pickle.load(f)
 
-# ======================================================
-# CORE FEATURE ENGINEERING (AUTO PREPROCESSING)
-# ======================================================
-def compute_age(dob: str, visit_date: str):
+numeric_cols = preprocess["numeric_cols"]
+categorical_cols = preprocess["categorical_cols"]
+encoders = preprocess["encoders"]
+best_threshold = preprocess["best_threshold"]
+feature_importance_map = preprocess["feature_importance"]
+
+feature_names = numeric_cols + categorical_cols
+
+GLOBAL_FEATURE_IMPORTANCE = [
+    {"feature": k, "importance": float(v)}
+    for k, v in sorted(feature_importance_map.items(), key=lambda kv: kv[1], reverse=True)
+]
+
+
+# ================================================================
+# UTILS
+# ================================================================
+def compute_age(dob, visit_date):
     try:
-        d1 = datetime.strptime(dob, "%Y-%m-%d").date()
-        d2 = datetime.strptime(visit_date, "%Y-%m-%d").date()
-        return d2.year - d1.year - ((d2.month, d2.day) < (d1.month, d1.day))
+        dob = datetime.strptime(str(dob), "%Y-%m-%d").date()
+        visit_date = datetime.strptime(str(visit_date), "%Y-%m-%d").date()
+        age = visit_date.year - dob.year - (
+            (visit_date.month, visit_date.day) < (dob.month, dob.day)
+        )
+        return max(age, 0)
     except:
         return 0
 
-def cost_anomaly(total_claim, proc_cost):
-    if proc_cost == 0:
-        return 0
-    return total_claim / proc_cost
 
-def procedure_mismatch(icd10, procedures):
-    return 1 if len(procedures) > 0 else 0
-
-def drug_mismatch(icd10, drugs):
-    return 1 if len(drugs) > 0 else 0
-
-def vitamin_mismatch(icd10, vitamins):
-    return 1 if len(vitamins) > 0 else 0
-
+# ================================================================
+# RAW → FEATURE ENGINEERING (SAMA DENGAN TRAINING)
+# ================================================================
 def build_features_from_raw(raw):
-    """
-    raw input example:
-    {
-      "claim_id": 123,
-      "patient_dob": "1988-01-10",
-      "visit_date": "2025-01-15",
-      "visit_type": "rawat jalan",
-      "department": "Poli Umum",
-      "icd10_primary_code": "J10",
-      "procedures": [ {"code":"99.1","cost":50000}, ... ],
-      "drugs": [ {"code":"D001","cost":12000}, ... ],
-      "vitamins": [ {"code":"V001","cost":5000} ],
-      "total_procedure_cost": 50000,
-      "total_drug_cost": 12000,
-      "total_vitamin_cost": 5000,
-      "total_claim_amount": 67000
-    }
-    """
+    claim_id = raw.get("claim_id")
 
-    proc_cost = float(raw.get("total_procedure_cost", 0))
-    drug_cost = float(raw.get("total_drug_cost", 0))
-    vit_cost  = float(raw.get("total_vitamin_cost", 0))
+    # Basic fields
+    visit_date = raw.get("visit_date")
+    dt = datetime.strptime(visit_date, "%Y-%m-%d").date()
+
+    total_proc = float(raw.get("total_procedure_cost", 0))
+    total_drug = float(raw.get("total_drug_cost", 0))
+    total_vit = float(raw.get("total_vitamin_cost", 0))
     total_claim = float(raw.get("total_claim_amount", 0))
 
+    # Lists
     procedures = raw.get("procedures", [])
-    drugs      = raw.get("drugs", [])
-    vitamins   = raw.get("vitamins", [])
+    drugs = raw.get("drugs", [])
+    vitamins = raw.get("vitamins", [])
 
-    icd10 = raw.get("icd10_primary_code")
+    # Rule features
+    severity_score = 3 if total_proc > 100000 else 1
+    cost_per_procedure = total_proc / max(len(procedures), 1)
+    patient_claim_count = 12
+    biaya_anomaly_score = total_claim / max(total_proc, 1)
+    cost_procedure_anomaly = 1 if cost_per_procedure > 500000 else 0
+    patient_frequency_risk = 1 if patient_claim_count > 10 else 0
 
-    # AUTO FEATURE ENGINEERING
-    features = {
-        "claim_id": raw.get("claim_id"),
-        "patient_age": compute_age(raw.get("patient_dob"), raw.get("visit_date")),
-        "visit_year": int(raw.get("visit_date")[0:4]),
-        "visit_month": int(raw.get("visit_date")[5:7]),
-        "visit_day": int(raw.get("visit_date")[8:10]),
+    # Clinical compatibility (dummy logic)
+    diagnosis_procedure_score = 0.2
+    diagnosis_drug_score = 0.1
+    diagnosis_vitamin_score = 0.0
+    treatment_consistency_score = 0.3
+
+    # mismatch flags
+    procedure_mismatch_flag = 1 if len(procedures) > 0 else 0
+    drug_mismatch_flag = 1 if len(drugs) > 0 else 0
+    vitamin_mismatch_flag = 1 if len(vitamins) > 0 else 0
+    mismatch_count = procedure_mismatch_flag + drug_mismatch_flag + vitamin_mismatch_flag
+
+    # FINAL FEATURE ROW
+    feature_row = {
+        "patient_age": compute_age(raw.get("patient_dob"), visit_date),
+        "total_procedure_cost": total_proc,
+        "total_drug_cost": total_drug,
+        "total_vitamin_cost": total_vit,
+        "total_claim_amount": total_claim,
+        "severity_score": severity_score,
+        "cost_per_procedure": cost_per_procedure,
+        "patient_claim_count": patient_claim_count,
+        "biaya_anomaly_score": biaya_anomaly_score,
+        "cost_procedure_anomaly": cost_procedure_anomaly,
+        "patient_frequency_risk": patient_frequency_risk,
+        "visit_year": dt.year,
+        "visit_month": dt.month,
+        "visit_day": dt.day,
+        "diagnosis_procedure_score": diagnosis_procedure_score,
+        "diagnosis_drug_score": diagnosis_drug_score,
+        "diagnosis_vitamin_score": diagnosis_vitamin_score,
+        "treatment_consistency_score": treatment_consistency_score,
+        "procedure_mismatch_flag": procedure_mismatch_flag,
+        "drug_mismatch_flag": drug_mismatch_flag,
+        "vitamin_mismatch_flag": vitamin_mismatch_flag,
+        "mismatch_count": mismatch_count,
         "visit_type": raw.get("visit_type"),
         "department": raw.get("department"),
-        "icd10_primary_code": icd10,
-
-        "total_procedure_cost": proc_cost,
-        "total_drug_cost": drug_cost,
-        "total_vitamin_cost": vit_cost,
-        "total_claim_amount": total_claim,
-
-        # === AUTO RULES ===
-        "severity_score": 3 if proc_cost > 100000 else 1,
-        "cost_per_procedure": proc_cost / max(len(procedures), 1),
-        "patient_claim_count": 1,            # can be improved later
-        "biaya_anomaly_score": cost_anomaly(total_claim, proc_cost),
-        "cost_procedure_anomaly": 1 if proc_cost > 500000 else 0,
-        "patient_frequency_risk": 0,
-
-        # === CLINICAL DUMMY (bisa digantikan AI) ===
-        "diagnosis_procedure_score": 1.0,
-        "diagnosis_drug_score": 1.0,
-        "diagnosis_vitamin_score": 1.0,
-        "treatment_consistency_score": 1.0,
-
-        # === MISMATCH ===
-        "procedure_mismatch_flag": procedure_mismatch(icd10, procedures),
-        "drug_mismatch_flag": drug_mismatch(icd10, drugs),
-        "vitamin_mismatch_flag": vitamin_mismatch(icd10, vitamins),
+        "icd10_primary_code": raw.get("icd10_primary_code"),
     }
 
-    # auto compute mismatch_count
-    features["mismatch_count"] = (
-        features["procedure_mismatch_flag"] +
-        features["drug_mismatch_flag"] +
-        features["vitamin_mismatch_flag"]
-    )
+    return claim_id, feature_row
 
-    return features
 
-# ======================================================
-# AUTO SUSPICIOUS SECTION DETECTOR
-# ======================================================
-def derive_suspicious_sections(feat):
+# ================================================================
+# ENCODE FEATURES → DMATRIX
+# ================================================================
+def build_feature_df(records):
+    df = pd.DataFrame.from_records(records)
+
+    # Ensure all required columns exist
+    for c in numeric_cols + categorical_cols:
+        if c not in df.columns:
+            df[c] = None
+
+    # Encode categoricals
+    for c in categorical_cols:
+        df[c] = df[c].astype(str).fillna("__MISSING__")
+        encoder = encoders[c]
+        df[c] = encoder.transform(df[[c]])[c]
+
+    # Clean numeric
+    for c in numeric_cols:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+
+    X = df[numeric_cols + categorical_cols]
+    dmatrix = xgb.DMatrix(X, feature_names=feature_names)
+
+    return df, dmatrix
+
+
+# ================================================================
+# RULE-BASED SUSPICIOUS SECTIONS
+# ================================================================
+def derive_suspicious(row):
     sec = []
-    if feat["procedure_mismatch_flag"] == 1:
-        sec.append("procedure_mismatch")
-    if feat["drug_mismatch_flag"] == 1:
-        sec.append("drug_mismatch")
-    if feat["vitamin_mismatch_flag"] == 1:
-        sec.append("vitamin_mismatch")
-
-    if feat["biaya_anomaly_score"] > 2.0:
+    if row.get("diagnosis_procedure_score", 1) < 1:
+        sec.append("procedure_incompatible_with_diagnosis")
+    if row.get("diagnosis_drug_score", 1) < 1:
+        sec.append("drug_incompatible_with_diagnosis")
+    if row.get("diagnosis_vitamin_score", 1) < 1:
+        sec.append("vitamin_incompatible_with_diagnosis")
+    if row.get("treatment_consistency_score", 1) < 0.67:
+        sec.append("overall_treatment_inconsistent")
+    if row.get("biaya_anomaly_score", 0) > 2.5:
         sec.append("cost_anomaly")
-
+    if row.get("patient_frequency_risk", 0) == 1:
+        sec.append("high_patient_claim_frequency")
+    if row.get("procedure_mismatch_flag", 0) == 1:
+        sec.append("procedure_mismatch")
+    if row.get("drug_mismatch_flag", 0) == 1:
+        sec.append("drug_mismatch")
+    if row.get("vitamin_mismatch_flag", 0) == 1:
+        sec.append("vitamin_mismatch")
     return sec
 
-# ======================================================
-# MAIN CML MODEL (RAW INPUT)
-# ======================================================
+
+# ================================================================
+# MAIN PREDICT FUNCTION
+# ================================================================
 @models.cml_model
 def predict(data):
 
+    # Parse JSON
     if isinstance(data, str):
         data = json.loads(data)
 
     raw_records = data.get("raw_records")
-    if not raw_records:
-        return {"error": "raw_records is required"}
+    if not raw_records or not isinstance(raw_records, list):
+        return {"error": "raw_records must be a non-empty list"}
 
-    # FEATURE ENGINEERING otomatis
-    processed = [build_features_from_raw(r) for r in raw_records]
+    processed_records = []
+    claim_ids = []
 
-    df = pd.DataFrame(processed)
+    # RAW → FEATURE ENGINEERING
+    for raw in raw_records:
+        cid, feature_row = build_features_from_raw(raw)
+        claim_ids.append(cid)
+        processed_records.append(feature_row)
 
-    # ensure numeric
-    df = df.apply(pd.to_numeric, errors="ignore").fillna(0)
+    # FE → encoded dataframe → DMatrix
+    df_raw, dmatrix = build_feature_df(processed_records)
 
-    # XGBoost requires only numeric input → drop non-numeric
-    df_model = df.select_dtypes(include=[np.number])
+    # Predict (uncalibrated)
+    y_raw = booster.predict(dmatrix)
 
-    dmat = xgb.DMatrix(df_model)
-
-    y_raw = model.predict(dmat)
+    # Calibrated probability
     y_proba = calibrator.predict(y_raw)
-    y_pred  = (y_proba >= 0.5).astype(int)
+    y_pred = (y_proba >= best_threshold).astype(int)
 
     results = []
-    for i, row in df.iterrows():
-        suspicious = derive_suspicious_sections(row.to_dict())
+
+    for i, cid in enumerate(claim_ids):
+        row = df_raw.iloc[i].to_dict()
+        suspicious = derive_suspicious(row)
+
         results.append({
-            "claim_id": row["claim_id"],
+            "claim_id": cid,
             "fraud_score": float(y_proba[i]),
+            "model_flag": int(y_pred[i]),
             "final_flag": int(y_pred[i]),
+            "rule_flag": None,
+            "rule_reason": None,
             "suspicious_sections": suspicious,
-            "features_used": row.to_dict()
+            "feature_importance": GLOBAL_FEATURE_IMPORTANCE
         })
 
     return {"results": results}
