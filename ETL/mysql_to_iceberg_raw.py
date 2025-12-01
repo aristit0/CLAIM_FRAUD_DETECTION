@@ -40,7 +40,7 @@ jdbc_props = {
 # ================================================================
 # 1. Spark Session + Load JAR (FROM HDFS)
 # ================================================================
-HDFS_JAR = "hdfs:///home/aris/mysql-connector-java-8.0.13.jar"
+HDFS_JAR = "hdfs:///user/aris/mysql-connector-java-8.0.13.jar"
 
 if USE_CML:
     conn = cmldata.get_connection("CDP-MSI")
