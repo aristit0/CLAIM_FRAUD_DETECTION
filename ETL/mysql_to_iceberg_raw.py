@@ -64,7 +64,7 @@ def read_mysql_table(table_name):
         .option("dbtable", table_name) \
         .option("user", jdbc_props["user"]) \
         .option("password", jdbc_props["password"]) \
-        .option("driver", jdbc_props["com.mysql.cj.jdbc.Driver"]) \
+        .option("driver", jdbc_props["com.mysql.jdbc.Driver"]) \
         .load()
 
 # ================================================================
