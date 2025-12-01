@@ -267,25 +267,15 @@ print(classification_report(y_test, y_pred))
 
 
 # =====================================================
-# 11. FEATURE IMPORTANCE (ALIGN DENGAN FEATURES)
+# 11. FEATURE IMPORTANCE (GAIN)
 # =====================================================
 print("=== FEATURE IMPORTANCE (GAIN) ===")
 
-# get_score mengembalikan dict: {'f0': importance, 'f1': ...}
 raw_importances = model.get_score(importance_type="gain")
 
-# mapping index f0, f1, ... ke nama kolom
-feature_scores = {}
-for fname, score in raw_importances.items():
-    # fname formatnya 'f0', 'f1', ...
-    idx = int(fname[1:])
-    if 0 <= idx < len(feature_names):
-        col_name = feature_names[idx]
-        feature_scores[col_name] = float(score)
-
-# sort by importance desc
+# langsung dipakai, tidak perlu mapping f0→nama kolom
 feature_scores = dict(
-    sorted(feature_scores.items(), key=lambda x: x[1], reverse=True)
+    sorted(raw_importances.items(), key=lambda x: x[1], reverse=True)
 )
 
 print("Top 20 important features:")
