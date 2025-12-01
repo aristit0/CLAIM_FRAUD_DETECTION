@@ -217,9 +217,80 @@ base = base.withColumn(
 # ================================================================
 base = base.withColumn("created_at", current_timestamp())
 
-feature_df = base.select(
-    "*",  # or list column explicitly
-)
+final_cols = [
+
+    # CLAIM + PATIENT
+    "claim_id",
+    "patient_nik",
+    "patient_name",
+    "patient_gender",
+    "patient_dob",
+    "patient_age",
+
+    # VISIT
+    "visit_date",
+    "visit_year",
+    "visit_month",
+    "visit_day",
+    "visit_type",
+    "doctor_name",
+    "department",
+
+    # DIAGNOSIS
+    "icd10_primary_code",
+    "icd10_primary_desc",
+
+    # RAW ARRAYS
+    "procedures_icd9_codes",
+    "procedures_icd9_descs",
+    "drug_codes",
+    "drug_names",
+    "vitamin_names",
+
+    # COSTS
+    "total_procedure_cost",
+    "total_drug_cost",
+    "total_vitamin_cost",
+    "total_claim_amount",
+
+    # CLINICAL SCORES
+    "diagnosis_procedure_score",
+    "diagnosis_drug_score",
+    "diagnosis_vitamin_score",
+    "treatment_consistency_score",
+
+    # EXPLICIT MISMATCH FLAGS (v5)
+    "procedure_mismatch_flag",
+    "drug_mismatch_flag",
+    "vitamin_mismatch_flag",
+    "mismatch_count",
+
+    # RISK FEATURES
+    "severity_score",
+    "cost_per_procedure",
+    "cost_procedure_anomaly",
+    "patient_claim_count",
+    "patient_frequency_risk",
+    "biaya_anomaly_score",
+
+    # LEGACY RULE FIELDS
+    "tindakan_validity_score",
+    "obat_validity_score",
+    "vitamin_relevance_score",
+    "diagnosis_procedure_mismatch",
+    "drug_mismatch_score",
+
+    # LABELING
+    "rule_violation_flag",
+    "rule_violation_reason",
+    "human_label",
+    "final_label",
+
+    # META
+    "created_at"
+]
+
+feature_df = base.select(*final_cols)
 
 # ================================================================
 # 15. WRITE TO ICEBERG
