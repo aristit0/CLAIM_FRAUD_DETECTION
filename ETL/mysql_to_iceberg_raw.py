@@ -33,7 +33,7 @@ jdbc_url = f"jdbc:mysql://{JDBC_HOST}:{JDBC_PORT}/{JDBC_DB}?useSSL=false&serverT
 jdbc_props = {
     "user": JDBC_USER,
     "password": JDBC_PASS,
-    "driver": "com.mysql.cj.jdbc.Driver"
+    "driver": "com.mysql.jdbc.Driver"
 }
 
 # ================================================================
