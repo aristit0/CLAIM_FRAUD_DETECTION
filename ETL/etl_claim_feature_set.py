@@ -8,7 +8,7 @@ from pyspark.sql.functions import (
 from pyspark.sql.window import Window
 from pyspark.sql import functions as F
 
-print("=== START FRAUD-ENHANCED ETL v4 FIXED ===")
+print("=== START FRAUD-ENHANCED ETL v4 FIXED FULL ===")
 
 # ================================================================
 # 1. CONNECT TO SPARK
@@ -24,6 +24,8 @@ diag = spark.sql("SELECT * FROM iceberg_raw.claim_diagnosis_raw")
 proc = spark.sql("SELECT * FROM iceberg_raw.claim_procedure_raw")
 drug = spark.sql("SELECT * FROM iceberg_raw.claim_drug_raw")
 vit  = spark.sql("SELECT * FROM iceberg_raw.claim_vitamin_raw")
+
+print("Loaded raw tables.")
 
 # ================================================================
 # 3. PRIMARY DIAGNOSIS
@@ -96,7 +98,7 @@ base = (
 )
 
 # ================================================================
-# 8. RULE-BASED FEATURES
+# 8. RULE-BASED FEATURES (legacy)
 # ================================================================
 base = (
     base.withColumn(
@@ -126,7 +128,7 @@ base = base.withColumn(
 )
 
 # ================================================================
-# 10. COST Z SCORE
+# 10. COST Z-SCORE
 # ================================================================
 w_cost = Window.partitionBy("icd10_primary_code", "visit_type")
 
@@ -197,6 +199,22 @@ base = base.withColumn(
 )
 
 # ================================================================
+# 12b. RULE VIOLATION FLAG (BARU DITAMBAH LAGI)
+# ================================================================
+base = base.withColumn(
+    "rule_violation_flag",
+    when(
+        (col("diagnosis_procedure_score") == 0) |
+        (col("diagnosis_drug_score") == 0) |
+        (col("diagnosis_vitamin_score") == 0) |
+        (col("cost_procedure_anomaly") == 1) |
+        (col("patient_frequency_risk") == 1) |
+        (col("biaya_anomaly_score") > 2.5),
+        1
+    ).otherwise(0)
+)
+
+# ================================================================
 # 13. HUMAN LABEL + FINAL LABEL
 # ================================================================
 base = base.withColumn(
@@ -212,7 +230,17 @@ base = base.withColumn(
 )
 
 # ================================================================
-# 14. CLEANUP — KEEP ONLY COLUMNS IN DDL
+# 13b. LEGACY SCORES + REASON (SET NULL DULU)
+# ================================================================
+base = (
+    base.withColumn("tindakan_validity_score", lit(None).cast("double"))
+        .withColumn("obat_validity_score", lit(None).cast("double"))
+        .withColumn("vitamin_relevance_score", lit(None).cast("double"))
+        .withColumn("rule_violation_reason", lit(None).cast("string"))
+)
+
+# ================================================================
+# 14. FINAL SELECT SESUAI DDL
 # ================================================================
 EXPECTED_COLS = [
     "claim_id",
@@ -261,10 +289,7 @@ EXPECTED_COLS = [
     "created_at"
 ]
 
-# ADD created_at
 base = base.withColumn("created_at", current_timestamp())
-
-# SELECT ONLY EXPECTED COLUMNS
 feature_df = base.select(*EXPECTED_COLS)
 
 # ================================================================
@@ -275,5 +300,5 @@ feature_df = base.select(*EXPECTED_COLS)
               .overwritePartitions()
 )
 
-print("=== ETL v4 FIXED COMPLETED ===")
+print("=== ETL v4 FIXED FULL COMPLETED ===")
 spark.stop()
