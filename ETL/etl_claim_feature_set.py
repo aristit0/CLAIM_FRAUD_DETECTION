@@ -8,13 +8,35 @@ from pyspark.sql.functions import (
 from pyspark.sql.window import Window
 from pyspark.sql import functions as F
 
-print("=== START FRAUD-ENHANCED ETL v4 FIXED FULL ===")
+print("=== START FRAUD-ENHANCED ETL v4 FIXED + TUNED ===")
 
 # ================================================================
 # 1. CONNECT TO SPARK
 # ================================================================
 conn = cmldata.get_connection("CDP-MSI")
 spark = conn.get_spark_session()
+
+print("=== APPLYING LOW-MEMORY SPARK TUNING ===")
+
+# ------------------------
+# SPARK LOW MEMORY TUNING
+# ------------------------
+spark.conf.set("spark.sql.shuffle.partitions", "50")
+spark.conf.set("spark.default.parallelism", "50")
+
+# force 1 executor only
+spark.conf.set("spark.executor.instances", "1")
+spark.conf.set("spark.executor.cores", "1")
+
+# limit memory
+spark.conf.set("spark.executor.memory", "2g")
+spark.conf.set("spark.driver.memory", "2g")
+
+print("spark.sql.shuffle.partitions =", spark.conf.get("spark.sql.shuffle.partitions"))
+print("spark.default.parallelism    =", spark.conf.get("spark.default.parallelism"))
+print("spark.executor.instances     =", spark.conf.get("spark.executor.instances"))
+print("spark.executor.memory        =", spark.conf.get("spark.executor.memory"))
+print("spark.driver.memory          =", spark.conf.get("spark.driver.memory"))
 
 # ================================================================
 # 2. LOAD RAW TABLES
@@ -98,7 +120,7 @@ base = (
 )
 
 # ================================================================
-# 8. RULE-BASED FEATURES (legacy)
+# 8. RULE-BASED FEATURES
 # ================================================================
 base = (
     base.withColumn(
@@ -199,7 +221,7 @@ base = base.withColumn(
 )
 
 # ================================================================
-# 12b. RULE VIOLATION FLAG (BARU DITAMBAH LAGI)
+# RULE VIOLATION FLAG
 # ================================================================
 base = base.withColumn(
     "rule_violation_flag",
@@ -230,7 +252,7 @@ base = base.withColumn(
 )
 
 # ================================================================
-# 13b. LEGACY SCORES + REASON (SET NULL DULU)
+# 13b. LEGACY SCORES + REASON
 # ================================================================
 base = (
     base.withColumn("tindakan_validity_score", lit(None).cast("double"))
@@ -240,7 +262,7 @@ base = (
 )
 
 # ================================================================
-# 14. FINAL SELECT SESUAI DDL
+# 14. FINAL SELECT
 # ================================================================
 EXPECTED_COLS = [
     "claim_id",
@@ -293,12 +315,12 @@ base = base.withColumn("created_at", current_timestamp())
 feature_df = base.select(*EXPECTED_COLS)
 
 # ================================================================
-# 15. WRITE TO ICEBERG
+# 15. WRITE TO ICEBERG (SAFE MODE)
 # ================================================================
 (
     feature_df.writeTo("iceberg_curated.claim_feature_set")
               .overwritePartitions()
 )
 
-print("=== ETL v4 FIXED FULL COMPLETED ===")
+print("=== ETL v4 FIXED + TUNED COMPLETED ===")
 spark.stop()
