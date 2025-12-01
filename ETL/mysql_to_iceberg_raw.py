@@ -44,7 +44,7 @@ if USE_CML:
     CONN_NAME = "CDP-MSI"
     conn = cmldata.get_connection(CONN_NAME)
     spark = conn.get_spark_session()
-    spark.sparkContext.addJar("/home/cdsw/mysql.jar")
+    spark._jsc.addJar("file:///home/cdsw/mysql.jar")
     logger.info("Spark session obtained from CML connection '%s'", CONN_NAME)
 else:
     # Fallback: create local SparkSession (adjust master & packages as needed)
@@ -64,7 +64,7 @@ def read_mysql_table(table_name):
         .option("dbtable", table_name) \
         .option("user", jdbc_props["user"]) \
         .option("password", jdbc_props["password"]) \
-        .option("driver", jdbc_props["driver"]) \
+        .option("driver", jdbc_props["com.mysql.cj.jdbc.Driver"]) \
         .load()
 
 # ================================================================
