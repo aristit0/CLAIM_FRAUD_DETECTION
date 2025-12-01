@@ -184,43 +184,52 @@
 </div>
 
 <!-- ============================================================ -->
-<!-- JAVASCRIPT AUTO-FILL SECTION -->
+<!-- JAVASCRIPT AUTO-FILL SECTION (FIXED & DYNAMIC) -->
 <!-- ============================================================ -->
 <script>
     function rand(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
-    const dxList = JSON.parse(`{{ ICD10|tojson|safe }}`);
-    const pxList = JSON.parse(`{{ ICD9|tojson|safe }}`);
-    const drugList = JSON.parse(`{{ DRUGS|tojson|safe }}`);
-    const vitaminList = JSON.parse(`{{ VITAMINS|tojson|safe }}`);
+    // Convert Jinja list → JS arrays
+    const ICD10 = JSON.parse(`{{ ICD10|tojson|safe }}`);
+    const ICD9 = JSON.parse(`{{ ICD9|tojson|safe }}`);
+    const DRUGS = JSON.parse(`{{ DRUGS|tojson|safe }}`);
+    const VITAMINS = JSON.parse(`{{ VITAMINS|tojson|safe }}`);
 
-    // =========================================================
-    // DEFINISI DIAGNOSIS UTAMA
-    // =========================================================
-    // Kita pakai diagnosis flu umum yang ringan → J06.9
-    const ICD10_J06 = "J06.9";
+    /* ==========================================================
+       AUTO-DETECT VALUES FROM DROPDOWN
+    ========================================================== */
 
-    // Prosedur yang sesuai untuk J06.9 (misal: nebulizer)
-    const PROCEDURE_J06 = "96.70";
+    // Ambil ICD10 yang dimulai dengan "J06"
+    let ICD10_J06 = ICD10.find(x => x[0].startsWith("J06"));
+    ICD10_J06 = ICD10_J06 ? ICD10_J06[0] : ICD10[0][0];   // fallback
 
-    // Obat yang sesuai untuk flu / common cold
-    const DRUG_J06 = "KFA001";   // contoh: Paracetamol
+    // Ambil procedure pertama yang paling mirip untuk J06 (gunakan pattern)
+    let PROCEDURE_J06 = ICD9.find(x =>
+        x[1].toLowerCase().includes("injeksi") ||
+        x[1].toLowerCase().includes("nebul")
+    );
+    PROCEDURE_J06 = PROCEDURE_J06 ? PROCEDURE_J06[0] : ICD9[0][0];
 
-    // Vitamin yang sesuai (VALID)
-    const VALID_VIT_J06 = "Vitamin C 500 mg";
+    // Ambil paracetamol otomatis
+    let DRUG_J06 = DRUGS.find(x =>
+        x[1].toLowerCase().includes("paracetamol")
+    );
+    DRUG_J06 = DRUG_J06 ? DRUG_J06[0] : DRUGS[0][0];
 
-    // Vitamin yang tidak sesuai (INVALID → fraud)
-    const INVALID_VIT_J06 = [
-        "Vitamin E 400 IU",
-        "Vitamin D 1000 IU",
-        "Vitamin B Complex",
-        "Vitamin Neurobion",
-        "Vitamin K"
-    ];
+    // Vitamin valid = Vitamin C (jika ada)
+    let VALID_VIT_J06 = VITAMINS.find(v =>
+        v.toLowerCase().includes("vitamin c")
+    );
+    VALID_VIT_J06 = VALID_VIT_J06 || VITAMINS[0];
 
-    // =========================================================
-    // AUTO-FILL NORMAL (Semua valid)
-    // =========================================================
+    // Vitamin invalid = semua kecuali vitamin C
+    const INVALID_VIT_J06 = VITAMINS.filter(v =>
+        !v.toLowerCase().includes("vitamin c")
+    );
+
+    /* ==========================================================
+       AUTO-FILL NORMAL
+    ========================================================== */
     function fillNormal() {
 
         document.querySelector("input[name='patient_name']").value = "Budi Santoso";
@@ -241,7 +250,7 @@
         // Procedure VALID
         document.getElementById("px_code").value = PROCEDURE_J06;
 
-        // Obat VALID
+        // Drug VALID
         document.getElementById("drug_code").value = DRUG_J06;
         document.getElementById("drug_cost").value = 50000;
 
@@ -253,10 +262,9 @@
         document.getElementById("procedure_cost").value = 80000;
     }
 
-    // =========================================================
-    // AUTO-FILL FRAUD
-    // Vitamin mismatch (ICD10: J06.9 → Vitamin must be Vitamin C)
-    // =========================================================
+    /* ==========================================================
+       AUTO-FILL FRAUD (Vitamin mismatch)
+    ========================================================== */
     function fillFraud() {
 
         document.querySelector("input[name='patient_name']").value = "Siti Rahmawati";
@@ -281,11 +289,11 @@
         document.getElementById("drug_code").value = DRUG_J06;
         document.getElementById("drug_cost").value = 60000;
 
-        // VITAMIN MISMATCH (FRAUD)
+        // Vitamin INVALID
         document.getElementById("vitamin_name").value = rand(INVALID_VIT_J06);
         document.getElementById("vitamin_cost").value = 45000;
 
-        // Biaya normal agar fokus fraud di vitamin mismatch
+        // Prosedur cost tetap normal
         document.getElementById("procedure_cost").value = 85000;
     }
 </script>
