@@ -29,35 +29,50 @@ jdbc_url = (
     "?useSSL=false&serverTimezone=UTC&zeroDateTimeBehavior=convertToNull"
 )
 
-# FIX driver class
+jdbc_driver = "com.mysql.cj.jdbc.Driver"
+
 jdbc_props = {
     "user": JDBC_USER,
     "password": JDBC_PASS,
-    "driver": "com.mysql.cj.jdbc.Driver"
+    "driver": jdbc_driver
 }
 
 # ================================================================
-# 1. Spark Session
+# 1. Spark Session + Load JAR (FROM HDFS)
 # ================================================================
+HDFS_JAR = "hdfs:///home/aris/mysql-connector-java-8.0.13.jar"
+
 if USE_CML:
     conn = cmldata.get_connection("CDP-MSI")
     spark = conn.get_spark_session()
 
-    # Tambahkan JAR MySQL
-    spark._jsc.addJar("file:///home/cdsw/mysql-connector-java-8.0.13.jar")
+    # Register JAR to driver + all executors
+    spark.sparkContext.addFile(HDFS_JAR)
+    spark._jsc.addJar(HDFS_JAR)
 
-    logger.info("Spark from CML + added MySQL driver jar")
+    print("Loaded MySQL JDBC from HDFS:", HDFS_JAR)
+
+    # Test driver
+    try:
+        spark._sc._jvm.java.lang.Class.forName(jdbc_driver)
+        print("DRIVER OK!")
+    except Exception as e:
+        print("DRIVER NOT FOUND:", e)
+
+    logger.info("Spark from CML with MySQL driver from HDFS")
 else:
+    # Local mode (if not using CML)
     spark = (
-        SparkSession.builder.appName("mysql-to-iceberg-etl")
+        SparkSession.builder
+        .appName("mysql-to-iceberg-etl")
         .config("spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkSessionCatalog")
         .config("spark.sql.catalog.spark_catalog.type", "hive")
-        .config("spark.jars", "/home/cdsw/mysql-connector-java-8.0.13.jar")
+        .config("spark.jars", HDFS_JAR)
         .getOrCreate()
     )
 
 # ================================================================
-# 2. READ TABLE FROM MYSQL (FIXED)
+# 2. READ TABLE FROM MYSQL
 # ================================================================
 def read_mysql_table(table_name):
     logger.info(f"Reading MySQL table: {table_name}")
@@ -66,9 +81,9 @@ def read_mysql_table(table_name):
         .format("jdbc")
         .option("url", jdbc_url)
         .option("dbtable", table_name)
-        .option("user", jdbc_props["user"])
-        .option("password", jdbc_props["password"])
-        .option("driver", jdbc_props["driver"])  # FIXED
+        .option("user", JDBC_USER)
+        .option("password", JDBC_PASS)
+        .option("driver", jdbc_driver)
         .load()
     )
 
@@ -138,7 +153,7 @@ vit = (
 )
 
 # ================================================================
-# 4. WRITE TO ICEBERG
+# 4. WRITE TO ICEBERG RAW
 # ================================================================
 def write_to_iceberg(df, table):
     logger.info(f"Writing to Iceberg: {table}")
