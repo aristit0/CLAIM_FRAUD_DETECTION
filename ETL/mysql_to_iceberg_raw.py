@@ -44,7 +44,7 @@ if USE_CML:
     spark = conn.get_spark_session()
 
     # Tambahkan JAR MySQL
-    spark._jsc.addJar("file:///home/cdsw/mysql-connector-j-8.0.33.jar")
+    spark._jsc.addJar("file:///home/cdsw/mysql.jar")
 
     logger.info("Spark from CML + added MySQL driver jar")
 else:
