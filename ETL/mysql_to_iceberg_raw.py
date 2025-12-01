@@ -52,7 +52,7 @@ else:
         SparkSession.builder.appName("mysql-to-iceberg-etl")
         .config("spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkSessionCatalog")
         .config("spark.sql.catalog.spark_catalog.type", "hive")
-        .config("spark.jars", "/home/cdsw/mysql-connector-j-8.0.33.jar")
+        .config("spark.jars", "/home/cdsw/mysql.jar")
         .getOrCreate()
     )
 
