@@ -3,18 +3,31 @@ import json
 import pickle
 import numpy as np
 import pandas as pd
+import xgboost as xgb
 import cml.models_v1 as models
 
-MODEL_FILE = "model.pkl"
+# ======================================================
+# FILES
+# ======================================================
+MODEL_JSON = "model.json"
+CALIB_FILE = "calibrator.pkl"
 PREPROCESS_FILE = "preprocess.pkl"
 META_FILE = "meta.json"
 
 # ======================================================
-# LOAD ARTIFACTS SEKALI SAJA (WAJIB DI CML SERVING)
+# LOAD ARTIFACTS SEKALI SAJA
 # ======================================================
-with open(MODEL_FILE, "rb") as f:
-    model = pickle.load(f)
+print("=== LOADING ARTIFACTS (Booster + Calibrator) ===")
 
+# Booster model
+model = xgb.Booster()
+model.load_model(MODEL_JSON)
+
+# Calibrator
+with open(CALIB_FILE, "rb") as f:
+    calibrator = pickle.load(f)
+
+# Preprocess metadata
 with open(PREPROCESS_FILE, "rb") as f:
     preprocess = pickle.load(f)
 
@@ -23,59 +36,53 @@ categorical_cols  = preprocess["categorical_cols"]
 encoders          = preprocess["encoders"]
 best_threshold    = preprocess.get("best_threshold", 0.5)
 feature_importance_map = preprocess.get("feature_importance", {})
-label_col         = preprocess.get("label_col", "rule_violation_flag")
+label_col         = preprocess.get("label_col", "final_label")
 
 feature_names = numeric_cols + categorical_cols
 
-# Build GLOBAL_FEATURE_IMPORTANCE list (untuk UI)
-if feature_importance_map:
-    GLOBAL_FEATURE_IMPORTANCE = [
-        {"feature": k, "importance": float(v)}
-        for k, v in sorted(feature_importance_map.items(), key=lambda kv: kv[1], reverse=True)
-    ]
-else:
-    try:
-        imps = model.feature_importances_
-        GLOBAL_FEATURE_IMPORTANCE = [
-            {"feature": n, "importance": float(v)}
-            for n, v in sorted(zip(feature_names, imps), key=lambda x: x[1], reverse=True)
-        ]
-    except Exception:
-        GLOBAL_FEATURE_IMPORTANCE = []
+# GLOBAL FEATURE IMPORTANCE (untuk UI)
+GLOBAL_FEATURE_IMPORTANCE = [
+    {"feature": k, "importance": float(v)}
+    for k, v in sorted(feature_importance_map.items(), key=lambda kv: kv[1], reverse=True)
+]
+
+print("Loaded Booster model + calibrator + preprocess metadata.")
 
 # ======================================================
-# BUILD FEATURE DF: records (JSON) → X (NUMPY)
+# FEATURE DF BUILDER
 # ======================================================
 def _build_feature_df(records):
     df = pd.DataFrame.from_records(records)
 
-    # Pastikan semua kolom ada
+    # Ensure all columns exist
     for c in numeric_cols + categorical_cols:
         if c not in df.columns:
             df[c] = None
 
-    # TargetEncoder untuk categorical
+    # Apply target encoder for categorical columns
     for c in categorical_cols:
         df[c] = df[c].astype(str).fillna("__MISSING__")
         te = encoders[c]
-        # TargetEncoder expect DataFrame
-        transformed = te.transform(df[[c]])
-        df[c] = transformed[c]
+        df[c] = te.transform(df[[c]])[c]
 
-    # Numeric
+    # Numeric cleaning
     for c in numeric_cols:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
 
+    # Final X matrix
     X = df[numeric_cols + categorical_cols]
-    return df, X
+
+    # Convert to DMatrix for Booster
+    dmatrix = xgb.DMatrix(X, feature_names=feature_names)
+
+    return df, dmatrix
 
 # ======================================================
-# RULE-BASED EXPLANATION dari FEATURE KLINIS
+# RULE-BASED SUSPICIOUS SIGNALS (clinical mismatch)
 # ======================================================
 def _derive_suspicious_sections(row):
     sec = []
 
-    # 1. Clinical compatibility
     try:
         if row.get("diagnosis_procedure_score", 1.0) < 1.0:
             sec.append("procedure_incompatible_with_diagnosis")
@@ -86,11 +93,9 @@ def _derive_suspicious_sections(row):
         if row.get("diagnosis_vitamin_score", 1.0) < 1.0:
             sec.append("vitamin_incompatible_with_diagnosis")
 
-        # 2. Overall treatment consistency
         if row.get("treatment_consistency_score", 1.0) < 0.67:
             sec.append("overall_treatment_inconsistent")
 
-        # 3. Legacy / cost / frequency signals
         if row.get("biaya_anomaly_score", 0.0) > 2.5:
             sec.append("cost_anomaly")
 
@@ -100,42 +105,33 @@ def _derive_suspicious_sections(row):
         if row.get("cost_procedure_anomaly", 0) == 1:
             sec.append("procedure_cost_extreme")
 
+        # mismatch flags explicitly
+        if row.get("procedure_mismatch_flag", 0) == 1:
+            sec.append("procedure_mismatch")
+
+        if row.get("drug_mismatch_flag", 0) == 1:
+            sec.append("drug_mismatch")
+
+        if row.get("vitamin_mismatch_flag", 0) == 1:
+            sec.append("vitamin_mismatch")
+
     except Exception:
-        # Jangan bikin error kalau ada kolom yang hilang
         pass
 
     return sec
 
 # ======================================================
-# MAIN PREDICT (UNTUK CML MODEL SERVING)
+# MAIN PREDICT ENDPOINT
 # ======================================================
 @models.cml_model
 def predict(data):
-    """
-    Endpoint CML akan memanggil fungsi ini.
-    Input:
-      {
-        "records": [
-          {
-            "claim_id": 123,
-            "visit_type": "...",
-            "department": "...",
-            "icd10_primary_code": "...",
-            ... semua fitur numeric & categorical ...
-            "rule_violation_flag": 0/1 (opsional),
-            "rule_violation_reason": "..." (opsional)
-          },
-          ...
-        ]
-      }
-    """
 
-    # Terima raw JSON string (kalau dipanggil dari HTTP manual)
+    # Handle string input (manual curl)
     if isinstance(data, str):
         try:
             data = json.loads(data)
         except Exception:
-            return {"error": "invalid JSON string"}
+            return {"error": "invalid JSON"}
 
     if not isinstance(data, dict):
         return {"error": "input must be JSON object"}
@@ -145,11 +141,17 @@ def predict(data):
         return {"error": "'records' must be a non-empty list"}
 
     try:
-        df_raw, X = _build_feature_df(records)
-        proba = model.predict_proba(X)[:, 1]
+        # Build dataframe + DMatrix
+        df_raw, dmatrix = _build_feature_df(records)
 
-        # Pakai threshold hasil training
-        preds_model = (proba >= float(best_threshold)).astype(int)
+        # Booster prediction (uncalibrated)
+        y_raw = model.predict(dmatrix)
+
+        # Calibrate score
+        y_proba = calibrator.predict(y_raw)
+
+        # Apply learned threshold
+        y_pred = (y_proba >= float(best_threshold)).astype(int)
 
         results = []
 
@@ -159,22 +161,21 @@ def predict(data):
             rule_flag   = rec.get("rule_violation_flag")
             rule_reason = rec.get("rule_violation_reason")
 
-            # Suspicious sections: kombinasi clinical compatibility + cost/frequency
             suspicious = _derive_suspicious_sections(row.to_dict())
 
-            # Final flag: kombinasikan rule & model
+            # Combine rule engine + ML
             if rule_flag is None:
-                final_flag = int(preds_model[i])
+                final_flag = int(y_pred[i])
                 rule_flag_out = None
             else:
                 rf = int(rule_flag)
-                final_flag = int(max(rf, preds_model[i]))
+                final_flag = max(rf, int(y_pred[i]))
                 rule_flag_out = rf
 
             results.append({
                 "claim_id": rec.get("claim_id"),
-                "fraud_score": float(proba[i]),
-                "model_flag": int(preds_model[i]),
+                "fraud_score": float(y_proba[i]),
+                "model_flag": int(y_pred[i]),
                 "final_flag": final_flag,
                 "rule_flag": rule_flag_out,
                 "rule_reason": rule_reason,
