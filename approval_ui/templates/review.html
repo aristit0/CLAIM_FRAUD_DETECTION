@@ -37,7 +37,7 @@
     <!-- GRID HEADER -->
     <div class="grid grid-cols-2 gap-6 mt-6">
 
-        <!-- LEFT -->
+        <!-- LEFT PANEL -->
         <div class="bg-gray-800 p-6 rounded-xl shadow">
             <h2 class="text-xl font-semibold mb-4">Patient & Visit Info</h2>
 
@@ -69,21 +69,22 @@
         <div class="bg-gray-800 p-6 rounded-xl shadow">
             <h2 class="text-xl font-semibold mb-4">Fraud Analysis</h2>
 
+            {% set m = scoring.model_output %}
+
             <!-- FRAUD SCORE -->
             <p class="mb-3">
                 <strong>Fraud Score:</strong>
 
-                {% set score = scoring.fraud_score %}
                 <span class="text-2xl font-bold
-                    {% if score >= 0.5 %} text-red-400 {% else %} text-green-400 {% endif %}">
-                    {{ score|round(3) }}
+                    {% if m.fraud_score >= 0.5 %} text-red-400 {% else %} text-green-400 {% endif %}">
+                    {{ m.fraud_score | round(3) }}
                 </span>
             </p>
 
             <!-- FINAL FLAG -->
             <p class="mt-2">
                 <strong>Final Decision Flag:</strong>
-                {% if scoring.final_flag == 1 %}
+                {% if m.final_flag == 1 %}
                     <span class="text-red-400 font-semibold">Potential Fraud</span>
                 {% else %}
                     <span class="text-green-400 font-semibold">Normal</span>
@@ -91,19 +92,20 @@
             </p>
 
             <!-- RULE FLAG -->
-            {% if scoring.rule_flag is not none %}
+            {% if m.rule_flag is not none %}
                 <p class="mt-2">
                     <strong>Rule Flag:</strong>
-                    <span class="text-yellow-300">{{ scoring.rule_flag }}</span>
+                    <span class="text-yellow-300">{{ m.rule_flag }}</span>
                 </p>
-
-                <p class="text-sm text-gray-300 mt-1">{{ scoring.rule_reason }}</p>
+                <p class="text-sm text-gray-300 mt-1">
+                    {{ m.rule_reason }}
+                </p>
             {% endif %}
 
             <!-- SUSPICIOUS -->
             <p class="mt-4 mb-2"><strong>Suspicious Sections:</strong></p>
             <div class="flex flex-wrap gap-2">
-                {% for s in scoring.suspicious_sections %}
+                {% for s in m.suspicious_sections %}
                     <span class="px-2 py-1 bg-red-700 rounded text-sm">{{ s }}</span>
                 {% else %}
                     <span class="text-gray-400">None</span>
@@ -115,25 +117,39 @@
                 <h3 class="font-semibold mb-2">Top Contributing Features</h3>
 
                 <div class="space-y-1 max-h-48 overflow-y-auto pr-2">
-                {% for item in scoring.feature_importance %}
-                    <div class="flex items-center gap-2">
-                        <span class="w-48 text-sm">{{ item.feature }}</span>
-                        <div class="flex-1 bg-gray-700 rounded h-2">
-                            <div class="bg-blue-400 h-2 rounded"
-                                 style="width: {{ (item.importance / scoring.feature_importance[0].importance) * 100 }}%">
+
+                    {% set top = m.feature_importance[0].importance %}
+
+                    {% for item in m.feature_importance %}
+                        {% set pct = ((item.importance / top) * 100) | round(2) %}
+
+                        <div class="flex items-center gap-2">
+                            <span class="w-48 text-sm">{{ item.feature }}</span>
+
+                            <div class="flex-1 bg-gray-700 rounded h-2">
+                                <div class="bg-blue-400 h-2 rounded w-[{{ pct }}%]"></div>
                             </div>
+
+                            <span class="text-xs text-gray-400">{{ item.importance | round(1) }}</span>
                         </div>
-                        <span class="text-xs text-gray-400">{{ item.importance|round(1) }}</span>
-                    </div>
-                {% endfor %}
+                    {% endfor %}
+
                 </div>
             </div>
 
-        </div> <!-- END RIGHT PANEL -->
+            <!-- AI EXPLANATION -->
+            <div class="mt-6">
+                <h3 class="font-semibold mb-2">AI Explanation</h3>
+                <div class="bg-gray-700 p-3 rounded text-sm whitespace-pre-line">
+                    {{ scoring.ai_explanation }}
+                </div>
+            </div>
+
+        </div> 
     </div>
 
 
-    <!-- DIAGNOSIS -->
+    <!-- DIAGNOSIS SECTION -->
     <div class="bg-gray-800 p-6 rounded-xl shadow mt-8">
         <h2 class="text-xl font-semibold mb-4">Diagnosis (ICD-10)</h2>
 
@@ -160,7 +176,7 @@
             {% endfor %}
         </table>
         {% else %}
-        <p class="text-gray-400">No diagnosis.</p>
+            <p class="text-gray-400">No diagnosis.</p>
         {% endif %}
     </div>
 
