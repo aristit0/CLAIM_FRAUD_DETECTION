@@ -173,6 +173,17 @@ base = base.withColumn(
 )
 
 # ================================================================
+# 11c. COST PROCEDURE ANOMALY FLAG
+# ================================================================
+base = base.withColumn(
+    "cost_procedure_anomaly",
+    when(
+        (col("cost_per_procedure") > col("mean_cost") + 2.0 * col("std_cost")),
+        1
+    ).otherwise(0)
+)
+
+# ================================================================
 # 12. *** NEW: EXPLICIT MISMATCH FLAGS ***
 # ================================================================
 base = base.withColumn(
