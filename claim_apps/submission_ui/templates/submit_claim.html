@@ -194,24 +194,33 @@
     const drugList = JSON.parse(`{{ DRUGS|tojson|safe }}`);
     const vitaminList = JSON.parse(`{{ VITAMINS|tojson|safe }}`);
 
-    // Allowed mapping J06
-    const J06_ALLOWED = {
-        dx: "J06",
-        procedure: "96.70",
-        drug: "KFA001",
-        vitamin: "Vitamin C 500 mg"
-    };
+    // =========================================================
+    // DEFINISI DIAGNOSIS UTAMA
+    // =========================================================
+    // Kita pakai diagnosis flu umum yang ringan → J06.9
+    const ICD10_J06 = "J06.9";
 
-    // Disallowed vitamin untuk J06
-    const INVALID_VITAMIN_FOR_J06 = [
+    // Prosedur yang sesuai untuk J06.9 (misal: nebulizer)
+    const PROCEDURE_J06 = "96.70";
+
+    // Obat yang sesuai untuk flu / common cold
+    const DRUG_J06 = "KFA001";   // contoh: Paracetamol
+
+    // Vitamin yang sesuai (VALID)
+    const VALID_VIT_J06 = "Vitamin C 500 mg";
+
+    // Vitamin yang tidak sesuai (INVALID → fraud)
+    const INVALID_VIT_J06 = [
         "Vitamin E 400 IU",
         "Vitamin D 1000 IU",
-        "Vitamin B Complex"
+        "Vitamin B Complex",
+        "Vitamin Neurobion",
+        "Vitamin K"
     ];
 
-    // ==============================
-    // NORMAL — BENAR-BENAR VALID
-    // ==============================
+    // =========================================================
+    // AUTO-FILL NORMAL (Semua valid)
+    // =========================================================
     function fillNormal() {
 
         document.querySelector("input[name='patient_name']").value = "Budi Santoso";
@@ -221,32 +230,33 @@
         document.querySelector("input[name='patient_phone']").value = "081234567890";
         document.querySelector("input[name='patient_address']").value = "Jl. Merdeka No.10 Jakarta";
 
-        document.querySelector("input[name='visit_date']").value = "2024-12-21";
+        document.querySelector("input[name='visit_date']").value = "2025-01-02";
         document.querySelector("select[name='visit_type']").value = "rawat jalan";
         document.querySelector("input[name='doctor_name']").value = "Dr. Ratna Sari";
         document.querySelector("select[name='department']").value = "Poli Umum";
 
-        // Diagnosis VALID → J06
-        document.getElementById("dx_primary").value = J06_ALLOWED.dx;
+        // Diagnosis VALID
+        document.getElementById("dx_primary").value = ICD10_J06;
 
         // Procedure VALID
-        document.getElementById("px_code").value = J06_ALLOWED.procedure;
+        document.getElementById("px_code").value = PROCEDURE_J06;
 
-        // Drug VALID
-        document.getElementById("drug_code").value = J06_ALLOWED.drug;
+        // Obat VALID
+        document.getElementById("drug_code").value = DRUG_J06;
         document.getElementById("drug_cost").value = 50000;
 
         // Vitamin VALID
-        document.getElementById("vitamin_name").value = J06_ALLOWED.vitamin;
+        document.getElementById("vitamin_name").value = VALID_VIT_J06;
         document.getElementById("vitamin_cost").value = 20000;
 
-        // Procedure cost ideal
+        // Biaya tindakan
         document.getElementById("procedure_cost").value = 80000;
     }
 
-    // ==============================
-    // FRAUD — Vitamin mismatch (demo paling jelas)
-    // ==============================
+    // =========================================================
+    // AUTO-FILL FRAUD
+    // Vitamin mismatch (ICD10: J06.9 → Vitamin must be Vitamin C)
+    // =========================================================
     function fillFraud() {
 
         document.querySelector("input[name='patient_name']").value = "Siti Rahmawati";
@@ -256,26 +266,26 @@
         document.querySelector("input[name='patient_phone']").value = "081298765432";
         document.querySelector("input[name='patient_address']").value = "Jl. Mawar No.55 Bekasi";
 
-        document.querySelector("input[name='visit_date']").value = "2024-12-22";
+        document.querySelector("input[name='visit_date']").value = "2025-01-03";
         document.querySelector("select[name='visit_type']").value = "rawat jalan";
         document.querySelector("input[name='doctor_name']").value = "Dr. Wibisana";
         document.querySelector("select[name='department']").value = "Poli Saraf";
 
-        // Diagnosis VALID → J06 (flu ringan)
-        document.getElementById("dx_primary").value = J06_ALLOWED.dx;
+        // Diagnosis VALID
+        document.getElementById("dx_primary").value = ICD10_J06;
 
         // Procedure VALID
-        document.getElementById("px_code").value = J06_ALLOWED.procedure;
+        document.getElementById("px_code").value = PROCEDURE_J06;
 
-        // Drug VALID
-        document.getElementById("drug_code").value = J06_ALLOWED.drug;
+        // Obat VALID
+        document.getElementById("drug_code").value = DRUG_J06;
         document.getElementById("drug_cost").value = 60000;
 
-        // Vitamin mismatch → FRAUD
-        document.getElementById("vitamin_name").value = rand(INVALID_VITAMIN_FOR_J06);
+        // VITAMIN MISMATCH (FRAUD)
+        document.getElementById("vitamin_name").value = rand(INVALID_VIT_J06);
         document.getElementById("vitamin_cost").value = 45000;
 
-        // Still normal procedure cost
+        // Biaya normal agar fokus fraud di vitamin mismatch
         document.getElementById("procedure_cost").value = 85000;
     }
 </script>
