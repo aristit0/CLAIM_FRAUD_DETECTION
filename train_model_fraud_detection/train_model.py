@@ -12,6 +12,9 @@ from category_encoders.target_encoder import TargetEncoder
 import xgboost as xgb
 import os, json, pickle
 
+# =====================================================
+# CONNECT TO SPARK
+# =====================================================
 print("=== CONNECTING TO SPARK ===")
 conn = cmldata.get_connection("CDP-MSI")
 spark = conn.get_spark_session()
@@ -19,20 +22,20 @@ spark = conn.get_spark_session()
 df_spark = spark.sql("""
     SELECT *
     FROM iceberg_curated.claim_feature_set
-    WHERE final_label IS NOT NULL     -- ignore pending claims
+    WHERE final_label IS NOT NULL
 """)
 
 df = df_spark.toPandas()
 print("Loaded dataset:", df.shape)
 
 # =====================================================
-# LABEL
+# LABEL (FINAL LABEL)
 # =====================================================
 label_col = "final_label"
 df[label_col] = df[label_col].astype(int)
 
 # =====================================================
-# FEATURES
+# FEATURES (AUTO-MATCH ETL)
 # =====================================================
 numeric_cols = [
     "patient_age",
@@ -47,10 +50,14 @@ numeric_cols = [
     "visit_year",
     "visit_month",
     "visit_day",
+
+    # CLINICAL COMPATIBILITY
     "diagnosis_procedure_score",
     "diagnosis_drug_score",
     "diagnosis_vitamin_score",
     "treatment_consistency_score",
+
+    # LEGACY RULES
     "diagnosis_procedure_mismatch",
     "drug_mismatch_score",
     "cost_procedure_anomaly",
@@ -67,16 +74,19 @@ print("Numeric:", numeric_cols)
 print("Cat:", categorical_cols)
 
 # =====================================================
-# TARGET ENCODING
+# ENCODING CATEGORICAL
 # =====================================================
 encoders = {}
+
 for c in categorical_cols:
-    df[c] = df[c].fillna("__MISSING__").astype(str)
+    df[c] = df[c].fillna("__UNKNOWN__").astype(str)  # UPDATED
     te = TargetEncoder(cols=[c], smoothing=0.3)
     df[c] = te.fit_transform(df[c], df[label_col])
     encoders[c] = te
 
-# Fill numeric NaN
+# =====================================================
+# CLEAN NUMERIC
+# =====================================================
 for c in numeric_cols:
     df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
 
@@ -84,7 +94,7 @@ X = df[numeric_cols + categorical_cols]
 y = df[label_col]
 
 # =====================================================
-# SPLIT
+# TRAIN/TEST SPLIT
 # =====================================================
 X_train, X_test, y_train, y_test = train_test_split(
     X, y,
@@ -93,6 +103,7 @@ X_train, X_test, y_train, y_test = train_test_split(
     stratify=y
 )
 
+# imbalance fix
 positive = (y_train == 1).sum()
 negative = (y_train == 0).sum()
 scale_pos_weight = negative / positive
@@ -142,7 +153,7 @@ for t in thresholds:
 print("Best threshold:", best_t, "F1:", best_f1)
 
 # =====================================================
-# FINAL EVAL
+# FINAL EVALUATION
 # =====================================================
 y_pred = (y_proba >= best_t).astype(int)
 
@@ -170,22 +181,19 @@ feature_scores = dict(
 ROOT = "/home/cdsw"
 os.makedirs(ROOT, exist_ok=True)
 
-with open(f"{ROOT}/model.pkl", "wb") as f:
-    pickle.dump(model, f)
-
-with open(f"{ROOT}/preprocess.pkl", "wb") as f:
-    pickle.dump({
-        "numeric_cols": numeric_cols,
-        "categorical_cols": categorical_cols,
-        "encoders": encoders,
-        "best_threshold": float(best_t),
-        "feature_importance": feature_scores,
-        "label_col": label_col,
-    }, f)
+pickle.dump(model, open(f"{ROOT}/model.pkl", "wb"))
+pickle.dump({
+    "numeric_cols": numeric_cols,
+    "categorical_cols": categorical_cols,
+    "encoders": encoders,
+    "best_threshold": float(best_t),
+    "feature_importance": feature_scores,
+    "label_col": label_col,
+}, open(f"{ROOT}/preprocess.pkl", "wb"))
 
 with open(f"{ROOT}/meta.json", "w") as f:
     json.dump({
-        "description": "Fraud model v4 — using human labels",
+        "description": "Fraud model v4 — synced with ETL v4",
         "label_source": "human+rules",
         "version": "v4"
     }, f, indent=2)
