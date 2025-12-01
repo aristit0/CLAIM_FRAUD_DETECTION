@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
-"""
-ETL: Read from MySQL (claimdb) -> write to Iceberg raw tables (iceberg_raw.*)
-Usage: run in CML / Spark environment where cmldata is available, or adjust spark creation accordingly.
-"""
-
 import logging
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import DoubleType, IntegerType, DateType, TimestampType, StringType
+from pyspark.sql.types import *
+import os
 
-# Jika kamu pakai CML connection helper (seperti di contoh), uncomment bagian cmldata
+# Try load CML connection
 try:
     import cml.data_v1 as cmldata
     USE_CML = True
@@ -20,7 +16,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("mysql-to-iceberg-etl")
 
 # ================================================================
-# KONFIG JDBC MySQL (pakai credentials yang kamu berikan)
+# JDBC CONFIG
 # ================================================================
 JDBC_HOST = "cdpmsi.tomodachis.org"
 JDBC_PORT = 3306
@@ -28,77 +24,77 @@ JDBC_DB   = "claimdb"
 JDBC_USER = "cloudera"
 JDBC_PASS = "T1ku$H1t4m"
 
-jdbc_url = f"jdbc:mysql://{JDBC_HOST}:{JDBC_PORT}/{JDBC_DB}?useSSL=false&serverTimezone=UTC"
+jdbc_url = (
+    f"jdbc:mysql://{JDBC_HOST}:{JDBC_PORT}/{JDBC_DB}"
+    "?useSSL=false&serverTimezone=UTC&zeroDateTimeBehavior=convertToNull"
+)
 
+# FIX driver class
 jdbc_props = {
     "user": JDBC_USER,
     "password": JDBC_PASS,
-    "driver": "com.mysql.jdbc.Driver"
+    "driver": "com.mysql.cj.jdbc.Driver"
 }
 
 # ================================================================
-# 1. INIT SPARK SESSION
+# 1. Spark Session
 # ================================================================
 if USE_CML:
-    # Use CML connection (reuses config from your environment)
-    CONN_NAME = "CDP-MSI"
-    conn = cmldata.get_connection(CONN_NAME)
+    conn = cmldata.get_connection("CDP-MSI")
     spark = conn.get_spark_session()
-    spark._jsc.addJar("file:///home/cdsw/mysql.jar")
-    logger.info("Spark session obtained from CML connection '%s'", CONN_NAME)
+
+    # Tambahkan JAR MySQL
+    spark._jsc.addJar("file:///home/cdsw/mysql-connector-j-8.0.33.jar")
+
+    logger.info("Spark from CML + added MySQL driver jar")
 else:
-    # Fallback: create local SparkSession (adjust master & packages as needed)
-    spark = SparkSession.builder \
-        .appName("mysql-to-iceberg-etl") \
-        .config("spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkSessionCatalog") \
+    spark = (
+        SparkSession.builder.appName("mysql-to-iceberg-etl")
+        .config("spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkSessionCatalog")
+        .config("spark.sql.catalog.spark_catalog.type", "hive")
+        .config("spark.jars", "/home/cdsw/mysql-connector-j-8.0.33.jar")
         .getOrCreate()
-    logger.info("Spark session created (non-CML mode).")
+    )
 
 # ================================================================
-# 2. HELPER: read table via JDBC
+# 2. READ TABLE FROM MYSQL (FIXED)
 # ================================================================
 def read_mysql_table(table_name):
-    logger.info("Reading MySQL table: %s", table_name)
-    return spark.read.format("jdbc") \
-        .option("url", jdbc_url) \
-        .option("dbtable", table_name) \
-        .option("user", jdbc_props["user"]) \
-        .option("password", jdbc_props["password"]) \
-        .option("driver", jdbc_props["com.mysql.jdbc.Driver"]) \
+    logger.info(f"Reading MySQL table: {table_name}")
+    return (
+        spark.read
+        .format("jdbc")
+        .option("url", jdbc_url)
+        .option("dbtable", table_name)
+        .option("user", jdbc_props["user"])
+        .option("password", jdbc_props["password"])
+        .option("driver", jdbc_props["driver"])  # FIXED
         .load()
+    )
 
-# ================================================================
-# 3. LOAD SOURCE TABLES
-# ================================================================
 hdr_raw  = read_mysql_table("claim_header")
 diag_raw = read_mysql_table("claim_diagnosis")
 proc_raw = read_mysql_table("claim_procedure")
 drug_raw = read_mysql_table("claim_drug")
 vit_raw  = read_mysql_table("claim_vitamin")
 
-logger.info("Selesai load semua tabel MySQL")
+logger.info("All MySQL tables loaded.")
 
 # ================================================================
-# 4. CAST / NORMALIZE SCHEMAS supaya cocok dengan Iceberg DDL
-#    (Iceberg raw uses DOUBLE for costs, DATE/TIMESTAMP mapping, STRING for varchars)
+# 3. CASTS → Iceberg Raw Schema
 # ================================================================
-# claim_header -> iceberg_raw.claim_header_raw
 hdr = (
     hdr_raw
-    .withColumnRenamed("claim_id", "claim_id")
-    # cast numeric costs to double
     .withColumn("total_procedure_cost", F.col("total_procedure_cost").cast(DoubleType()))
     .withColumn("total_drug_cost",      F.col("total_drug_cost").cast(DoubleType()))
     .withColumn("total_vitamin_cost",   F.col("total_vitamin_cost").cast(DoubleType()))
     .withColumn("total_claim_amount",   F.col("total_claim_amount").cast(DoubleType()))
-    # dates & timestamps
-    .withColumn("patient_dob",   F.col("patient_dob").cast(DateType()))
-    .withColumn("visit_date",    F.col("visit_date").cast(DateType()))
-    .withColumn("created_at",    F.col("created_at").cast(TimestampType()))
-    .withColumn("updated_at",    F.col("updated_at").cast(TimestampType()))
+    .withColumn("patient_dob", F.col("patient_dob").cast(DateType()))
+    .withColumn("visit_date", F.col("visit_date").cast(DateType()))
+    .withColumn("created_at", F.col("created_at").cast(TimestampType()))
+    .withColumn("updated_at", F.col("updated_at").cast(TimestampType()))
 )
 
-# claim_diagnosis -> iceberg_raw.claim_diagnosis_raw
 diag = (
     diag_raw
     .withColumn("id", F.col("id").cast("long"))
@@ -108,7 +104,6 @@ diag = (
     .withColumn("is_primary", F.col("is_primary").cast(IntegerType()))
 )
 
-# claim_procedure -> iceberg_raw.claim_procedure_raw
 proc = (
     proc_raw
     .withColumn("id", F.col("id").cast("long"))
@@ -119,7 +114,6 @@ proc = (
     .withColumn("procedure_date", F.col("procedure_date").cast(DateType()))
 )
 
-# claim_drug -> iceberg_raw.claim_drug_raw
 drug = (
     drug_raw
     .withColumn("id", F.col("id").cast("long"))
@@ -133,7 +127,6 @@ drug = (
     .withColumn("cost", F.col("cost").cast(DoubleType()))
 )
 
-# claim_vitamin -> iceberg_raw.claim_vitamin_raw
 vit = (
     vit_raw
     .withColumn("id", F.col("id").cast("long"))
@@ -144,34 +137,20 @@ vit = (
     .withColumn("cost", F.col("cost").cast(DoubleType()))
 )
 
-logger.info("Schemas telah discast / dinormalisasi")
-
 # ================================================================
-# 5. WRITE TO ICEBERG (RAW) - Overwrite initial partitions (sesuaikan jika mau append)
-# NOTE: writeTo API digunakan agar kompatibel dengan Iceberg catalog
+# 4. WRITE TO ICEBERG
 # ================================================================
-def write_to_iceberg(df, table_name, mode="overwrite_partitions"):
-    logger.info("Menulis ke Iceberg table: %s (mode=%s)", table_name, mode)
-    # Gunakan overwritePartitions() untuk menggantikan data per partition (sesuai referensimu)
-    if mode == "overwrite_partitions":
-        df.writeTo(table_name).overwritePartitions()
-    elif mode == "append":
-        df.writeTo(table_name).append()
-    else:
-        # fallback: save as overwrite (full)
-        df.writeTo(table_name).overwrite()
+def write_to_iceberg(df, table):
+    logger.info(f"Writing to Iceberg: {table}")
+    df.writeTo(table).overwritePartitions()
 
-# Tulis setiap table; ganti mode jika kamu ingin append incremental
-write_to_iceberg(hdr, "iceberg_raw.claim_header_raw", mode="overwrite_partitions")
-write_to_iceberg(diag, "iceberg_raw.claim_diagnosis_raw", mode="overwrite_partitions")
-write_to_iceberg(proc, "iceberg_raw.claim_procedure_raw", mode="overwrite_partitions")
-write_to_iceberg(drug, "iceberg_raw.claim_drug_raw", mode="overwrite_partitions")
-write_to_iceberg(vit, "iceberg_raw.claim_vitamin_raw", mode="overwrite_partitions")
+write_to_iceberg(hdr,  "iceberg_raw.claim_header_raw")
+write_to_iceberg(diag, "iceberg_raw.claim_diagnosis_raw")
+write_to_iceberg(proc, "iceberg_raw.claim_procedure_raw")
+write_to_iceberg(drug, "iceberg_raw.claim_drug_raw")
+write_to_iceberg(vit,  "iceberg_raw.claim_vitamin_raw")
 
-logger.info("Semua tabel berhasil ditulis ke iceberg_raw.*")
+logger.info("All raw tables written to Iceberg.")
 
-# ================================================================
-# 6. DONE
-# ================================================================
 spark.stop()
-logger.info("ETL selesai, Spark session stopped")
+logger.info("DONE")
