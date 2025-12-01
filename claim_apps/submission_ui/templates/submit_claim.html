@@ -189,15 +189,29 @@
 <script>
     function rand(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
-    // Ambil semua master data dari backend (aman untuk VSCode & browser)
     const dxList = JSON.parse(`{{ ICD10|tojson|safe }}`);
     const pxList = JSON.parse(`{{ ICD9|tojson|safe }}`);
     const drugList = JSON.parse(`{{ DRUGS|tojson|safe }}`);
     const vitaminList = JSON.parse(`{{ VITAMINS|tojson|safe }}`);
 
-    // ======================
-    // NORMAL INPUT
-    // ======================
+    // Allowed mapping J06
+    const J06_ALLOWED = {
+        dx: "J06",
+        procedure: "96.70",
+        drug: "KFA001",
+        vitamin: "Vitamin C 500 mg"
+    };
+
+    // Disallowed vitamin untuk J06
+    const INVALID_VITAMIN_FOR_J06 = [
+        "Vitamin E 400 IU",
+        "Vitamin D 1000 IU",
+        "Vitamin B Complex"
+    ];
+
+    // ==============================
+    // NORMAL — BENAR-BENAR VALID
+    // ==============================
     function fillNormal() {
 
         document.querySelector("input[name='patient_name']").value = "Budi Santoso";
@@ -212,24 +226,27 @@
         document.querySelector("input[name='doctor_name']").value = "Dr. Ratna Sari";
         document.querySelector("select[name='department']").value = "Poli Umum";
 
-        // Diagnosis & Procedure normal
-        document.getElementById("dx_primary").value = dxList[0][0];
-        document.getElementById("px_code").value = pxList[0][0];
+        // Diagnosis VALID → J06
+        document.getElementById("dx_primary").value = J06_ALLOWED.dx;
 
-        // Obat normal
-        document.getElementById("drug_code").value = drugList[0][0];
+        // Procedure VALID
+        document.getElementById("px_code").value = J06_ALLOWED.procedure;
+
+        // Drug VALID
+        document.getElementById("drug_code").value = J06_ALLOWED.drug;
         document.getElementById("drug_cost").value = 50000;
 
-        // Vitamin normal
-        document.getElementById("vitamin_name").value = vitaminList[0];
+        // Vitamin VALID
+        document.getElementById("vitamin_name").value = J06_ALLOWED.vitamin;
         document.getElementById("vitamin_cost").value = 20000;
 
+        // Procedure cost ideal
         document.getElementById("procedure_cost").value = 80000;
     }
 
-    // ======================
-    // FRAUD: Tindakan tidak relevan
-    // ======================
+    // ==============================
+    // FRAUD — Vitamin mismatch (demo paling jelas)
+    // ==============================
     function fillFraud() {
 
         document.querySelector("input[name='patient_name']").value = "Siti Rahmawati";
@@ -244,24 +261,22 @@
         document.querySelector("input[name='doctor_name']").value = "Dr. Wibisana";
         document.querySelector("select[name='department']").value = "Poli Saraf";
 
-        // Diagnosis ringan
-        const dxLight = ["J06", "A09", "K29"];
-        document.getElementById("dx_primary").value = rand(dxLight);
+        // Diagnosis VALID → J06 (flu ringan)
+        document.getElementById("dx_primary").value = J06_ALLOWED.dx;
 
-        // Prosedur FRAUD sangat berat dan tidak relevan
-        const pxFraud = ["99.04", "39.95", "99.07"];
-        document.getElementById("px_code").value = rand(pxFraud);
+        // Procedure VALID
+        document.getElementById("px_code").value = J06_ALLOWED.procedure;
 
-        // Obat wajar
-        document.getElementById("drug_code").value = drugList[2][0];
-        document.getElementById("drug_cost").value = 120000;
+        // Drug VALID
+        document.getElementById("drug_code").value = J06_ALLOWED.drug;
+        document.getElementById("drug_cost").value = 60000;
 
-        // Vitamin random
-        document.getElementById("vitamin_name").value = rand(vitaminList);
+        // Vitamin mismatch → FRAUD
+        document.getElementById("vitamin_name").value = rand(INVALID_VITAMIN_FOR_J06);
         document.getElementById("vitamin_cost").value = 45000;
 
-        // Prosedur mahal → memicu anomaly
-        document.getElementById("procedure_cost").value = 350000;
+        // Still normal procedure cost
+        document.getElementById("procedure_cost").value = 85000;
     }
 </script>
 

@@ -73,14 +73,14 @@ CREATE TABLE iceberg_curated.claim_feature_set (
     total_claim_amount DOUBLE,
 
     -------------------------------------------------------------
-    --  LEGACY REQUIRED BY BACKEND MODEL
+    -- LEGACY VALIDITY SCORES
     -------------------------------------------------------------
     tindakan_validity_score DOUBLE,
     obat_validity_score DOUBLE,
     vitamin_relevance_score DOUBLE,
 
     -------------------------------------------------------------
-    -- NEW CLINICAL COMPATIBILITY SCORES (BARU)
+    -- CLINICAL COMPATIBILITY
     -------------------------------------------------------------
     diagnosis_procedure_score DOUBLE,
     diagnosis_drug_score DOUBLE,
@@ -88,7 +88,7 @@ CREATE TABLE iceberg_curated.claim_feature_set (
     treatment_consistency_score DOUBLE,
 
     -------------------------------------------------------------
-    -- RULE-BASED FEATURES
+    -- RULE FEATURES
     -------------------------------------------------------------
     severity_score INT,
     diagnosis_procedure_mismatch INT,
@@ -97,14 +97,17 @@ CREATE TABLE iceberg_curated.claim_feature_set (
     cost_procedure_anomaly INT,
     patient_claim_count INT,
     patient_frequency_risk INT,
-
     biaya_anomaly_score DOUBLE,
 
     -------------------------------------------------------------
-    -- FINAL RISK
+    -- FINAL RISK + HUMAN LABEL
     -------------------------------------------------------------
     rule_violation_flag INT,
     rule_violation_reason STRING,
+
+    -- ⭐ ADDED (baru)
+    human_label INT,
+    final_label INT,
 
     created_at TIMESTAMP
 )
