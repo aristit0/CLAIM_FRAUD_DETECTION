@@ -164,6 +164,15 @@ base = base.withColumn(
 )
 
 # ================================================================
+# 11b. COST PER PROCEDURE (harus ada, sesuai DDL)
+# ================================================================
+base = base.withColumn(
+    "cost_per_procedure",
+    when(col("has_procedure") == 0, col("total_claim_amount"))
+    .otherwise(col("total_claim_amount") / col("has_procedure"))
+)
+
+# ================================================================
 # 12. *** NEW: EXPLICIT MISMATCH FLAGS ***
 # ================================================================
 base = base.withColumn(
