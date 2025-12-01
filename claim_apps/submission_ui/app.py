@@ -219,13 +219,14 @@ def list_claims():
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
-    cursor.execute("SELECT COUNT(*) AS total FROM claim_header")
+    cursor.execute("SELECT COUNT(*) AS total FROM claim_header WHERE STATUS = 'pending'")
     total = cursor.fetchone()["total"]
     total_pages = math.ceil(total / limit)
 
     cursor.execute(f"""
         SELECT claim_id, patient_name, patient_nik, total_claim_amount, status, created_at
         FROM claim_header
+        WHERE STATUS = 'pending'
         ORDER BY claim_id DESC
         LIMIT {limit} OFFSET {offset}
     """)

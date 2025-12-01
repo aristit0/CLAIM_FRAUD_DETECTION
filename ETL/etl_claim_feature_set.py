@@ -179,25 +179,81 @@ base = (
 )
 
 # ================================================================
-# 12. CLINICAL COMPATIBILITY MATRIX (NEW RULES)
+# 12. CLINICAL COMPATIBILITY MATRIX (PRODUCTION RULES ENHANCED)
 # ================================================================
-map_proc = spark.table("iceberg_ref.icd10_icd9_map").groupBy("icd10_code") \
-    .agg(F.collect_set("icd9_code").alias("allowed_icd9_codes"))
 
-map_drug = spark.table("iceberg_ref.icd10_drug_map").groupBy("icd10_code") \
-    .agg(F.collect_set("drug_code").alias("allowed_drug_codes"))
+MATRIX_VERSION = "clinical_matrix_v2025_01"
 
-map_vit = spark.table("iceberg_ref.icd10_vitamin_map").groupBy("icd10_code") \
-    .agg(F.collect_set("vitamin_name").alias("allowed_vitamins"))
-
-base = (
-    base
-    .join(map_proc, base.icd10_primary_code == map_proc.icd10_code, "left")
-    .join(map_drug, base.icd10_primary_code == map_drug.icd10_code, "left")
-    .join(map_vit,  base.icd10_primary_code == map_vit.icd10_code, "left")
+# ---------------------------------------------------------------
+# LOAD MATRIX WITH VERSION FILTER
+# ---------------------------------------------------------------
+icd9_map = (
+    spark.table("iceberg_ref.icd10_icd9_map")
+         .where(col("is_active") == True)
+         .where(col("source") == MATRIX_VERSION)
 )
 
-# 1. Procedure match
+drug_map = (
+    spark.table("iceberg_ref.icd10_drug_map")
+         .where(col("is_active") == True)
+         .where(col("source") == MATRIX_VERSION)
+)
+
+vit_map = (
+    spark.table("iceberg_ref.icd10_vitamin_map")
+         .where(col("is_active") == True)
+         .where(col("source") == MATRIX_VERSION)
+)
+
+# ---------------------------------------------------------------
+# BUILD ALLOWED CODES (AS LISTS)
+# ---------------------------------------------------------------
+map_proc = (
+    icd9_map.groupBy("icd10_code")
+            .agg(F.collect_set("icd9_code").alias("allowed_icd9_codes"))
+)
+
+map_drug = (
+    drug_map.groupBy("icd10_code")
+            .agg(F.collect_set("drug_code").alias("allowed_drug_codes"))
+)
+
+map_vit = (
+    vit_map.groupBy("icd10_code")
+           .agg(F.collect_set("vitamin_name").alias("allowed_vitamins"))
+)
+
+# ---------------------------------------------------------------
+# JOIN MATRIX
+# ---------------------------------------------------------------
+base = (
+    base.join(map_proc, base.icd10_primary_code == map_proc.icd10_code, "left")
+        .join(map_drug, base.icd10_primary_code == map_drug.icd10_code, "left")
+        .join(map_vit,  base.icd10_primary_code == map_vit.icd10_code, "left")
+)
+
+# ---------------------------------------------------------------
+# AGE RULE → PRODUCES AGE_COMPATIBILITY_SCORE (0 to 1)
+# ---------------------------------------------------------------
+base = base.withColumn(
+    "age_compatible",
+    when(
+        (
+            (col("patient_age").isNotNull()) &
+            (
+                # age >= min_age OR min_age null
+                (col("patient_age") >= F.coalesce(drug_map.min_age, lit(0))) &
+                # age <= max_age OR max_age null
+                (col("patient_age") <= F.coalesce(drug_map.max_age, lit(200)))
+            )
+        ),
+        1.0
+    ).otherwise(0.0)
+)
+
+# ---------------------------------------------------------------
+# SCORING RULE: PROCEDURE MATCH (0 or 1)
+# ---------------------------------------------------------------
 base = base.withColumn(
     "diagnosis_procedure_score",
     when(
@@ -207,7 +263,9 @@ base = base.withColumn(
     ).otherwise(0.0)
 )
 
-# 2. Drug match
+# ---------------------------------------------------------------
+# SCORING RULE: DRUG MATCH (soft score)
+# ---------------------------------------------------------------
 base = base.withColumn(
     "diagnosis_drug_score",
     when(
@@ -217,7 +275,32 @@ base = base.withColumn(
     ).otherwise(0.0)
 )
 
-# 3. Vitamin match
+# ---------------------------------------------------------------
+# PENALTY 1: ANTIBIOTIC INJECTION FOR COMMON COLD (J06)
+# ---------------------------------------------------------------
+antibiotic_misuse = (
+    (col("icd10_primary_code") == "J06") &
+    (F.array_contains(col("drug_codes"), "KFA003")) &  # ceftriaxone injeksi (contoh)
+    (col("severity_score") <= 1)
+)
+
+base = base.withColumn(
+    "antibiotic_injection_penalty",
+    when(antibiotic_misuse, 1).otherwise(0)
+)
+
+# Apply penalty to drug score
+base = base.withColumn(
+    "diagnosis_drug_score",
+    when(
+        col("antibiotic_injection_penalty") == 1,
+        0.2   # very low score
+    ).otherwise(col("diagnosis_drug_score"))
+)
+
+# ---------------------------------------------------------------
+# SCORING RULE: VITAMIN MATCH (0 or 1)
+# ---------------------------------------------------------------
 base = base.withColumn(
     "diagnosis_vitamin_score",
     when(
@@ -227,15 +310,18 @@ base = base.withColumn(
     ).otherwise(0.0)
 )
 
-# 4. Consistency score
+# ---------------------------------------------------------------
+# FINAL CONSISTENCY SCORE (weighted)
+# ---------------------------------------------------------------
 base = base.withColumn(
     "treatment_consistency_score",
-    (col("diagnosis_procedure_score") +
-     col("diagnosis_drug_score") +
-     col("diagnosis_vitamin_score")) / lit(3.0)
+    (
+        col("diagnosis_procedure_score") * 0.4 +
+        col("diagnosis_drug_score") * 0.4 +
+        col("diagnosis_vitamin_score") * 0.2
+    )
 )
 
-# Clean helper
 base = base.drop("allowed_icd9_codes", "allowed_drug_codes", "allowed_vitamins")
 
 # ================================================================
