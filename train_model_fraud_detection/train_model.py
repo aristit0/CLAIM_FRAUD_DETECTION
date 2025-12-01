@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 import cml.data_v1 as cmldata
 from pyspark.sql.functions import col
 import pandas as pd
@@ -17,21 +18,11 @@ print("=== CONNECTING TO SPARK ===")
 conn = cmldata.get_connection("CDP-MSI")
 spark = conn.get_spark_session()
 
-df_spark = spark.sql("""
-    SELECT *
-    FROM iceberg_curated.claim_feature_set
-    WHERE final_label IS NOT NULL
-""")
-
-df = df_spark.toPandas()
-print("Loaded dataset:", df.shape)
+# =====================================================
+# DEFINISI LABEL & FEATURE LIST (ALIGNED DENGAN ETL v5)
+# =====================================================
 
 label_col = "final_label"
-df[label_col] = df[label_col].astype(int)
-
-# =====================================================
-# FEATURE SET v5
-# =====================================================
 
 numeric_cols = [
     "patient_age",
@@ -47,13 +38,13 @@ numeric_cols = [
     "patient_frequency_risk",
     "visit_year", "visit_month", "visit_day",
 
-    # NEW clinical scores
+    # clinical compatibility scores
     "diagnosis_procedure_score",
     "diagnosis_drug_score",
     "diagnosis_vitamin_score",
     "treatment_consistency_score",
 
-    # NEW explicit mismatch flags
+    # explicit mismatch flags
     "procedure_mismatch_flag",
     "drug_mismatch_flag",
     "vitamin_mismatch_flag",
@@ -66,21 +57,53 @@ categorical_cols = [
     "icd10_primary_code",
 ]
 
-print("Numeric:", numeric_cols)
-print("Cat:", categorical_cols)
+all_cols = numeric_cols + categorical_cols + [label_col]
+
+print("Numeric features:", numeric_cols)
+print("Categorical features:", categorical_cols)
+print("Total features:", len(all_cols) - 1, "+ label")
 
 # =====================================================
-# ENCODER
+# LOAD DATA DARI SPARK (HANYA KOLOM YANG DIPAKAI)
 # =====================================================
 
+print("=== LOADING DATA FROM ICEBERG (FEATURE_SET) ===")
+df_spark = (
+    spark.table("iceberg_curated.claim_feature_set")
+         .where(col(label_col).isNotNull())
+         .select(*all_cols)
+)
+
+# OPTIONAL: batasi max rows supaya aman buat toPandas
+MAX_ROWS = 300_000  # bisa dinaikkan kalau resource cukup
+df_spark = df_spark.limit(MAX_ROWS)
+
+print("Spark DF schema:")
+df_spark.printSchema()
+
+print("=== CONVERT TO PANDAS ===")
+df = df_spark.toPandas()
+print("Loaded pandas dataset:", df.shape)
+
+# =====================================================
+# LABEL
+# =====================================================
+df[label_col] = df[label_col].astype(int)
+
+# =====================================================
+# ENCODING CATEGORICAL
+# =====================================================
 encoders = {}
+
 for c in categorical_cols:
     df[c] = df[c].fillna("__UNKNOWN__").astype(str)
     te = TargetEncoder(cols=[c], smoothing=0.3)
     df[c] = te.fit_transform(df[c], df[label_col])
     encoders[c] = te
 
-# clean numeric
+# =====================================================
+# CLEAN NUMERIC
+# =====================================================
 for c in numeric_cols:
     df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
 
@@ -88,7 +111,7 @@ X = df[numeric_cols + categorical_cols]
 y = df[label_col]
 
 # =====================================================
-# TRAIN TEST SPLIT
+# TRAIN/TEST SPLIT
 # =====================================================
 X_train, X_test, y_train, y_test = train_test_split(
     X, y,
@@ -97,15 +120,15 @@ X_train, X_test, y_train, y_test = train_test_split(
     stratify=y
 )
 
-# POSITIVE-WEIGHT
 positive = (y_train == 1).sum()
 negative = (y_train == 0).sum()
 scale_pos_weight = negative / positive
+print("Train size:", X_train.shape, "Pos:", positive, "Neg:", negative,
+      "scale_pos_weight:", scale_pos_weight)
 
 # =====================================================
-# MODEL (XGBOOST v5 IMPROVED)
+# XGBOOST MODEL (v5 IMPROVED)
 # =====================================================
-
 model = xgb.XGBClassifier(
     n_estimators=700,
     max_depth=8,
@@ -131,8 +154,9 @@ model.fit(
 )
 
 # =====================================================
-# CALIBRATION (ISOTONIC)
+# CALIBRATION (ISOTONIC REGRESSION)
 # =====================================================
+print("=== CALIBRATING FRAUD SCORE ===")
 y_proba_raw = model.predict_proba(X_test)[:, 1]
 
 iso = IsotonicRegression(out_of_bounds="clip")
@@ -141,9 +165,8 @@ iso.fit(y_proba_raw, y_test)
 y_proba = iso.predict(y_proba_raw)
 
 # =====================================================
-# THRESHOLD OPTIMIZATION
+# THRESHOLD OPTIMIZATION (F1)
 # =====================================================
-
 thresholds = np.arange(0.1, 0.9, 0.02)
 best_t = 0.5
 best_f1 = 0
@@ -173,7 +196,11 @@ print(classification_report(y_test, y_pred))
 # =====================================================
 importances = model.feature_importances_
 feature_scores = dict(
-    sorted(zip(X.columns, importances), key=lambda x: x[1], reverse=True)
+    sorted(
+        zip(X.columns, importances),
+        key=lambda x: x[1],
+        reverse=True
+    )
 )
 
 # =====================================================
