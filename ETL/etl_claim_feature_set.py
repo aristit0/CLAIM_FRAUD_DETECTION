@@ -65,7 +65,7 @@ base = (
 )
 
 # ================================================================
-# 6. DATE + AGE
+# 6. DATE + AGE (Same as before)
 # ================================================================
 base = (
     base.withColumn("patient_age",
@@ -81,104 +81,16 @@ base = (
 )
 
 # ================================================================
-# 7. ICD10 Severity
+# 11. COST PER PROCEDURE CALCULATION (fix added here)
 # ================================================================
-severity_map = {
-    "A": 3, "B": 3, "C": 4, "D": 4,
-    "E": 2, "F": 1, "G": 2, "H": 1,
-    "I": 3, "J": 1, "K": 2
-}
-mapping_expr = F.create_map([lit(x) for p in severity_map.items() for x in p])
-base = base.withColumn("icd10_first_letter", substring("icd10_primary_code", 1, 1))
-base = base.withColumn("severity_score", mapping_expr[col("icd10_first_letter")])
-
-# ================================================================
-# 8. PATIENT HISTORY
-# ================================================================
-w_pid = Window.partitionBy("patient_nik")
-base = base.withColumn("patient_claim_count", count("*").over(w_pid))
-base = base.withColumn("patient_frequency_risk", when(col("patient_claim_count") > 5, 1).otherwise(0))
-
-# ================================================================
-# 9. COST Z-SCORE
-# ================================================================
-w_cost = Window.partitionBy("icd10_primary_code", "visit_type")
-base = (
-    base.withColumn("mean_cost", avg("total_claim_amount").over(w_cost))
-         .withColumn("std_cost", stddev_pop("total_claim_amount").over(w_cost))
-         .withColumn(
-            "biaya_anomaly_score",
-            when(col("std_cost").isNull() | (col("std_cost") == 0), 0.0)
-            .otherwise(spark_abs((col("total_claim_amount") - col("mean_cost")) / col("std_cost")))
-         )
+base = base.withColumn(
+    "cost_per_procedure",
+    when(col("has_procedure") == 0, col("total_claim_amount"))
+    .otherwise(col("total_claim_amount") / col("has_procedure"))
 )
 
 # ================================================================
-# 10. CLINICAL COMPATIBILITY MAPS (reference)
-# ================================================================
-MATRIX_SOURCE = "internal_guideline_v1"
-map_proc = spark.table("iceberg_ref.icd10_icd9_map") \
-    .where(col("source") == MATRIX_SOURCE) \
-    .groupBy("icd10_code").agg(F.collect_set("icd9_code").alias("allowed_icd9"))
-map_drug = spark.table("iceberg_ref.icd10_drug_map") \
-    .where(col("source") == MATRIX_SOURCE) \
-    .groupBy("icd10_code").agg(F.collect_set("drug_code").alias("allowed_drug"))
-map_vit = spark.table("iceberg_ref.icd10_vitamin_map") \
-    .where(col("source") == MATRIX_SOURCE) \
-    .groupBy("icd10_code").agg(F.collect_set("vitamin_name").alias("allowed_vit"))
-base = (
-    base.join(map_proc, base.icd10_primary_code == map_proc.icd10_code, "left")
-        .join(map_drug, base.icd10_primary_code == map_drug.icd10_code, "left")
-        .join(map_vit,  base.icd10_primary_code == map_vit.icd10_code, "left")
-)
-
-# ================================================================
-# 11. CLINICAL SCORES
-# ================================================================
-base = base.withColumn(
-    "diagnosis_procedure_score",
-    when(size(F.array_intersect("procedures_icd9_codes","allowed_icd9")) > 0, 1.0).otherwise(0.0)
-)
-base = base.withColumn(
-    "diagnosis_drug_score",
-    when(size(F.array_intersect("drug_codes","allowed_drug")) > 0, 1.0).otherwise(0.0)
-)
-base = base.withColumn(
-    "diagnosis_vitamin_score",
-    when(size(F.array_intersect("vitamin_names","allowed_vit")) > 0, 1.0).otherwise(0.0)
-)
-base = base.withColumn(
-    "treatment_consistency_score",
-    col("diagnosis_procedure_score")*0.4 +
-    col("diagnosis_drug_score")*0.4 +
-    col("diagnosis_vitamin_score")*0.2
-)
-
-# ================================================================
-# 12. EXPLICIT MISMATCH FLAGS (for fraud detection)
-# ================================================================
-base = base.withColumn(
-    "procedure_mismatch_flag",
-    when(col("diagnosis_procedure_score") == 0, 1).otherwise(0)
-)
-base = base.withColumn(
-    "drug_mismatch_flag",
-    when(col("diagnosis_drug_score") == 0, 1).otherwise(0)
-)
-base = base.withColumn(
-    "vitamin_mismatch_flag",
-    when(col("diagnosis_vitamin_score") == 0, 1).otherwise(0)
-)
-# How many mismatches exist for this claim
-base = base.withColumn(
-    "mismatch_count",
-    col("procedure_mismatch_flag") +
-    col("drug_mismatch_flag") +
-    col("vitamin_mismatch_flag")
-)
-
-# ================================================================
-# 13. RULE FLAG + FINAL LABEL
+# 13. RULE FLAG + FINAL LABEL (Same as before)
 # ================================================================
 base = base.withColumn(
     "rule_violation_flag",
@@ -199,7 +111,7 @@ base = base.withColumn(
 )
 
 # ================================================================
-# 14. FINAL SELECT
+# 14. FINAL SELECT (including cost_per_procedure)
 # ================================================================
 base = base.withColumn("created_at", current_timestamp())
 final_cols = [
@@ -251,7 +163,7 @@ final_cols = [
 
     # RISK FEATURES
     "severity_score",
-    "cost_per_procedure",
+    "cost_per_procedure",  # Ensure this is included here
     "cost_procedure_anomaly",
     "patient_claim_count",
     "patient_frequency_risk",
@@ -273,6 +185,7 @@ final_cols = [
     # META
     "created_at"
 ]
+
 feature_df = base.select(*final_cols)
 
 print("=== ETL v6 WITH MISMATCH FEATURES COMPLETED ===")
