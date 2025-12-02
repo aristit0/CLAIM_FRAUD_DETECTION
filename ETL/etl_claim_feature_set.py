@@ -14,7 +14,7 @@ from pyspark.sql import udf
 
 # Import centralized config
 project_root = os.getcwd()
-sys.path.insert(0, project_root)
+sys.path.insert(0, os.path.join(os.getcwd(), "ETL"))
 from config import COMPAT_RULES, COST_THRESHOLDS
 
 print("=" * 80)
