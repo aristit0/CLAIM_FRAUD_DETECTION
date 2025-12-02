@@ -67,7 +67,7 @@ base = (
 )
 
 # ================================================================
-# 6. DATE + AGE (Same as before)
+# 6. DATE + AGE
 # ================================================================
 base = (
     base.withColumn("patient_age",
@@ -83,16 +83,25 @@ base = (
 )
 
 # ================================================================
-# 11. COST PER PROCEDURE CALCULATION (fix added here)
+# 7. CALCULATE PROCEDURE, DRUG, AND VITAMIN MATCHING SCORES
 # ================================================================
 base = base.withColumn(
-    "cost_per_procedure",
-    when(col("has_procedure") == 0, col("total_claim_amount"))
-    .otherwise(col("total_claim_amount") / col("has_procedure"))
+    "diagnosis_procedure_score",
+    when(size(F.array_intersect("procedures_icd9_codes", "allowed_icd9")) > 0, 1.0).otherwise(0.0)
+)
+
+base = base.withColumn(
+    "diagnosis_drug_score",
+    when(size(F.array_intersect("drug_codes", "allowed_drug")) > 0, 1.0).otherwise(0.0)
+)
+
+base = base.withColumn(
+    "diagnosis_vitamin_score",
+    when(size(F.array_intersect("vitamin_names", "allowed_vit")) > 0, 1.0).otherwise(0.0)
 )
 
 # ================================================================
-# 12. EXPLICIT MISMATCH FLAGS (for fraud detection)
+# 8. EXPLICIT MISMATCH FLAGS (for fraud detection)
 # ================================================================
 base = base.withColumn(
     "procedure_mismatch_flag",
@@ -116,7 +125,7 @@ base = base.withColumn(
 )
 
 # ================================================================
-# 13. RULE FLAG + FINAL LABEL
+# 9. RULE FLAG + FINAL LABEL
 # ================================================================
 base = base.withColumn(
     "rule_violation_flag",
@@ -137,7 +146,7 @@ base = base.withColumn(
 )
 
 # ================================================================
-# 14. FINAL SELECT (including cost_per_procedure)
+# 10. FINAL SELECT (including cost_per_procedure)
 # ================================================================
 base = base.withColumn("created_at", current_timestamp())
 final_cols = [
@@ -215,7 +224,7 @@ final_cols = [
 feature_df = base.select(*final_cols)
 
 # ================================================================
-# 15. FINISHED ETL
+# 11. FINISHED ETL
 # ================================================================
 print("=== ETL v6 WITH MISMATCH FEATURES COMPLETED ===")
 spark.stop()
