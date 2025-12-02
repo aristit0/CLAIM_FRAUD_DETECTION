@@ -9,7 +9,7 @@ import cml.data_v1 as cmldata
 import xgboost as xgb
 import seaborn as sns
 import matplotlib.pyplot as plt
-
+from pyspark.sql.functions import col  # <-- ADD THIS LINE
 from sklearn.model_selection import StratifiedKFold, train_test_split, GridSearchCV
 from sklearn.metrics import (
     roc_auc_score, f1_score, precision_score, recall_score,
@@ -18,7 +18,6 @@ from sklearn.metrics import (
 from sklearn.isotonic import IsotonicRegression
 from category_encoders.target_encoder import TargetEncoder
 from imblearn.over_sampling import SMOTE
-
 
 # =====================================================
 # 0. CONNECT TO SPARK
