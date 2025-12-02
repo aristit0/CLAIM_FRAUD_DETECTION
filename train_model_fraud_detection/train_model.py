@@ -3,22 +3,21 @@
 import os
 import json
 import pickle
-
-import cml.data_v1 as cmldata
-from pyspark.sql.functions import col
-
 import pandas as pd
 import numpy as np
+import cml.data_v1 as cmldata
+import xgboost as xgb
+import seaborn as sns
+import matplotlib.pyplot as plt
 
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedKFold, train_test_split, GridSearchCV
 from sklearn.metrics import (
     roc_auc_score, f1_score, precision_score, recall_score,
     classification_report, confusion_matrix
 )
-from category_encoders.target_encoder import TargetEncoder
 from sklearn.isotonic import IsotonicRegression
-
-import xgboost as xgb
+from category_encoders.target_encoder import TargetEncoder
+from imblearn.over_sampling import SMOTE
 
 
 # =====================================================
@@ -77,7 +76,6 @@ print("Numeric features:", numeric_cols)
 print("Categorical features:", categorical_cols)
 print("Total features:", len(all_cols) - 1, "+ label")
 
-
 # =====================================================
 # 2. LOAD DATA DARI ICEBERG CURATED
 # =====================================================
@@ -113,7 +111,7 @@ print(label_counts)
 
 
 # =====================================================
-# 4. ENCODING CATEGORICAL (TARGET ENCODER)
+# 4. ENCODING CATEGORICAL (TARGET ENCODING)
 # =====================================================
 print("=== TARGET ENCODING CATEGORICAL ===")
 
@@ -136,16 +134,25 @@ for c in numeric_cols:
 X = df[numeric_cols + categorical_cols]
 y = df[label_col]
 
+# =====================================================
+# 6. HANDLE IMBALANCE (SMOTE)
+# =====================================================
+print("=== HANDLING IMBALANCE WITH SMOTE ===")
+
+smote = SMOTE(random_state=42)
+X_res, y_res = smote.fit_resample(X, y)
+
+print(f"Resampled dataset shape {X_res.shape}")
 
 # =====================================================
-# 6. TRAIN / TEST SPLIT
+# 7. TRAIN / TEST SPLIT
 # =====================================================
 print("=== TRAIN / TEST SPLIT ===")
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y,
+    X_res, y_res,
     test_size=0.2,
     random_state=42,
-    stratify=y
+    stratify=y_res
 )
 
 positive = int((y_train == 1).sum())
@@ -157,9 +164,8 @@ print(
     f"Neg: {negative}, scale_pos_weight: {scale_pos_weight:.4f}"
 )
 
-
 # =====================================================
-# 7. XGBOOST Booster (xgb.train) + EARLY STOPPING
+# 8. XGBOOST Booster (xgb.train) + EARLY STOPPING
 # =====================================================
 print("=== PREPARE DMatrix ===")
 
@@ -209,7 +215,7 @@ print("Best score (AUC):", model.best_score)
 
 
 # =====================================================
-# 8. CALIBRATION (ISOTONIC REGRESSION)
+# 9. CALIBRATION (ISOTONIC REGRESSION)
 # =====================================================
 print("=== CALIBRATING FRAUD SCORE (Isotonic Regression) ===")
 
@@ -224,7 +230,7 @@ y_proba = iso.predict(y_proba_raw)
 
 
 # =====================================================
-# 9. THRESHOLD OPTIMIZATION (F1)
+# 10. THRESHOLD OPTIMIZATION (F1)
 #    - supaya suspicious flag lebih akurat
 # =====================================================
 print("=== THRESHOLD TUNING (F1) ===")
@@ -244,7 +250,7 @@ print(f"Best threshold: {best_t:.3f} | Best F1: {best_f1:.4f}")
 
 
 # =====================================================
-# 10. FINAL EVALUATION
+# 11. FINAL EVALUATION
 # =====================================================
 print("=== FINAL EVALUATION (CALIBRATED SCORE) ===")
 
@@ -267,7 +273,7 @@ print(classification_report(y_test, y_pred))
 
 
 # =====================================================
-# 11. FEATURE IMPORTANCE (GAIN)
+# 12. FEATURE IMPORTANCE (GAIN)
 # =====================================================
 print("=== FEATURE IMPORTANCE (GAIN) ===")
 
@@ -286,23 +292,23 @@ for i, (k, v) in enumerate(feature_scores.items()):
 
 
 # =====================================================
-# 12. SAVE ARTIFACTS (MODEL + CALIBRATOR + PREPROCESS META)
+# 13. SAVE ARTIFACTS (MODEL + CALIBRATOR + PREPROCESS META)
 # =====================================================
 print("=== SAVING ARTIFACTS ===")
 
 ROOT = "/home/cdsw"
 os.makedirs(ROOT, exist_ok=True)
 
-# 12.1 Simpan XGBoost Booster (bentuk JSON)
+# 13.1 Simpan XGBoost Booster (bentuk JSON)
 model_path = os.path.join(ROOT, "model.json")
 model.save_model(model_path)
 
-# 12.2 Simpan calibrator
+# 13.2 Simpan calibrator
 calib_path = os.path.join(ROOT, "calibrator.pkl")
 with open(calib_path, "wb") as f:
     pickle.dump(iso, f)
 
-# 12.3 Simpan preprocessing config
+# 13.3 Simpan preprocessing config
 preprocess = {
     "numeric_cols": numeric_cols,
     "categorical_cols": categorical_cols,
@@ -316,7 +322,7 @@ preprocess_path = os.path.join(ROOT, "preprocess.pkl")
 with open(preprocess_path, "wb") as f:
     pickle.dump(preprocess, f)
 
-# 12.4 Meta info (buat tracking versi di app)
+# 13.4 Meta info (buat tracking versi di app)
 meta_path = os.path.join(ROOT, "meta.json")
 with open(meta_path, "w") as f:
     json.dump(
