@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 import cml.data_v1 as cmldata
 from pyspark.sql.functions import (
     col, lit, when, collect_list, first, year, month, dayofmonth,
@@ -7,6 +8,7 @@ from pyspark.sql.functions import (
 )
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
+
 print("=== START FRAUD-ENHANCED ETL v6 WITH EXPLICIT MISMATCH FLAGS ===")
 
 # ================================================================
@@ -90,7 +92,31 @@ base = base.withColumn(
 )
 
 # ================================================================
-# 13. RULE FLAG + FINAL LABEL (Same as before)
+# 12. EXPLICIT MISMATCH FLAGS (for fraud detection)
+# ================================================================
+base = base.withColumn(
+    "procedure_mismatch_flag",
+    when(col("diagnosis_procedure_score") == 0, 1).otherwise(0)
+)
+base = base.withColumn(
+    "drug_mismatch_flag",
+    when(col("diagnosis_drug_score") == 0, 1).otherwise(0)
+)
+base = base.withColumn(
+    "vitamin_mismatch_flag",
+    when(col("diagnosis_vitamin_score") == 0, 1).otherwise(0)
+)
+
+# Explicitly calculate mismatch_count after flag columns are created
+base = base.withColumn(
+    "mismatch_count",
+    col("procedure_mismatch_flag") +
+    col("drug_mismatch_flag") +
+    col("vitamin_mismatch_flag")
+)
+
+# ================================================================
+# 13. RULE FLAG + FINAL LABEL
 # ================================================================
 base = base.withColumn(
     "rule_violation_flag",
@@ -188,5 +214,8 @@ final_cols = [
 
 feature_df = base.select(*final_cols)
 
+# ================================================================
+# 15. FINISHED ETL
+# ================================================================
 print("=== ETL v6 WITH MISMATCH FEATURES COMPLETED ===")
 spark.stop()
