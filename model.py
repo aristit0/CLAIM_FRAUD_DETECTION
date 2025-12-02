@@ -6,14 +6,6 @@ import pandas as pd
 import xgboost as xgb
 import cml.models_v1 as models
 from datetime import datetime
-import logging
-from category_encoders.target_encoder import TargetEncoder
-
-# ================================================================
-# CONFIGURE LOGGING
-# ================================================================
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # ================================================================
 # LOAD ARTIFACTS
@@ -22,7 +14,7 @@ MODEL_JSON = "model.json"
 CALIB_FILE = "calibrator.pkl"
 PREPROCESS_FILE = "preprocess.pkl"
 
-logger.info("=== LOADING MODEL ARTIFACTS ===")
+print("=== LOADING MODEL ARTIFACTS ===")
 
 # XGBoost Booster
 booster = xgb.Booster()
@@ -50,7 +42,7 @@ GLOBAL_FEATURE_IMPORTANCE = [
 ]
 
 # ================================================================
-# UTILITY FUNCTIONS
+# UTILITY
 # ================================================================
 def compute_age(dob, visit_date):
     try:
@@ -60,105 +52,83 @@ def compute_age(dob, visit_date):
             (visit_date.month, visit_date.day) < (dob.month, dob.day)
         )
         return max(age, 0)
-    except Exception as e:
-        logger.error(f"Error computing age: {e}")
+    except:
         return 0
 
+# ================================================================
+# RAW → FEATURE ENGINEERING (Rule Set A Revised)
+# ================================================================
 def build_features_from_raw(raw):
-    try:
-        claim_id = raw.get("claim_id")
-        visit_date = raw.get("visit_date")
-        dt = datetime.strptime(visit_date, "%Y-%m-%d").date()
+    claim_id = raw.get("claim_id")
 
-        procedures = raw.get("procedures", [])
-        drugs = raw.get("drugs", [])
-        vitamins = raw.get("vitamins", [])
+    visit_date = raw.get("visit_date")
+    dt = datetime.strptime(visit_date, "%Y-%m-%d").date()
 
-        total_proc = float(raw.get("total_procedure_cost", 0))
-        total_drug = float(raw.get("total_drug_cost", 0))
-        total_vit = float(raw.get("total_vitamin_cost", 0))
-        total_claim = float(raw.get("total_claim_amount", 0))
+    procedures = raw.get("procedures", [])
+    drugs = raw.get("drugs", [])
+    vitamins = raw.get("vitamins", [])
 
-        # Basic rule-based signals (Rule Set A – Human Friendly)
-        severity_score = 1 if total_proc <= 100000 else 2 if total_proc <= 300000 else 3
-        cost_per_procedure = total_proc / max(len(procedures), 1)
-        biaya_anomaly_score = total_claim / max(total_proc, 1)
+    total_proc = float(raw.get("total_procedure_cost", 0))
+    total_drug = float(raw.get("total_drug_cost", 0))
+    total_vit = float(raw.get("total_vitamin_cost", 0))
+    total_claim = float(raw.get("total_claim_amount", 0))
 
-        # Frequency dummy
-        patient_claim_count = 2
-        patient_frequency_risk = 1 if patient_claim_count > 10 else 0
+    # Basic rule-based signals (Rule Set A – Human Friendly)
+    severity_score = 1 if total_proc <= 100000 else 2 if total_proc <= 300000 else 3
+    cost_per_procedure = total_proc / max(len(procedures), 1)
+    biaya_anomaly_score = total_claim / max(total_proc, 1)
 
-        # Clinical consistency (simplified / neutral)
-        diagnosis_procedure_score = 1
-        diagnosis_drug_score = 1
-        diagnosis_vitamin_score = 1
-        treatment_consistency_score = 1
+    # Frequency dummy
+    patient_claim_count = 2
+    patient_frequency_risk = 1 if patient_claim_count > 10 else 0
 
-        # REVISED mismatch rules (only high cost triggers mismatch)
-        procedure_mismatch_flag = 1 if total_proc > 300000 else 0
-        drug_mismatch_flag = 1 if total_drug > 150000 else 0
-        vitamin_mismatch_flag = 1 if total_vit > 80000 else 0
+    # Clinical consistency (simplified / neutral)
+    diagnosis_procedure_score = 1
+    diagnosis_drug_score = 1
+    diagnosis_vitamin_score = 1
+    treatment_consistency_score = 1
 
-        mismatch_count = procedure_mismatch_flag + drug_mismatch_flag + vitamin_mismatch_flag
+    # REVISED mismatch rules (only high cost triggers mismatch)
+    procedure_mismatch_flag = 1 if total_proc > 300000 else 0
+    drug_mismatch_flag = 1 if total_drug > 150000 else 0
+    vitamin_mismatch_flag = 1 if total_vit > 80000 else 0
 
-        feature_row = {
-            "patient_age": compute_age(raw.get("patient_dob"), visit_date),
-            "total_procedure_cost": total_proc,
-            "total_drug_cost": total_drug,
-            "total_vitamin_cost": total_vit,
-            "total_claim_amount": total_claim,
-            "severity_score": severity_score,
-            "cost_per_procedure": cost_per_procedure,
-            "patient_claim_count": patient_claim_count,
-            "biaya_anomaly_score": biaya_anomaly_score,
-            "cost_procedure_anomaly": 1 if cost_per_procedure > 500000 else 0,
-            "patient_frequency_risk": patient_frequency_risk,
-            "visit_year": dt.year,
-            "visit_month": dt.month,
-            "visit_day": dt.day,
-            "diagnosis_procedure_score": diagnosis_procedure_score,
-            "diagnosis_drug_score": diagnosis_drug_score,
-            "diagnosis_vitamin_score": diagnosis_vitamin_score,
-            "treatment_consistency_score": treatment_consistency_score,
-            "procedure_mismatch_flag": procedure_mismatch_flag,
-            "drug_mismatch_flag": drug_mismatch_flag,
-            "vitamin_mismatch_flag": vitamin_mismatch_flag,
-            "mismatch_count": mismatch_count,
-            "visit_type": raw.get("visit_type"),
-            "department": raw.get("department"),
-            "icd10_primary_code": raw.get("icd10_primary_code"),
-        }
+    mismatch_count = procedure_mismatch_flag + drug_mismatch_flag + vitamin_mismatch_flag
 
-        return claim_id, feature_row
-    except Exception as e:
-        logger.error(f"Error processing raw record: {e}")
-        return None, {}
+    feature_row = {
+        "patient_age": compute_age(raw.get("patient_dob"), visit_date),
+        "total_procedure_cost": total_proc,
+        "total_drug_cost": total_drug,
+        "total_vitamin_cost": total_vit,
+        "total_claim_amount": total_claim,
 
-# ================================================================
-# BUILD DMATRIX
-# ================================================================
-def build_feature_df(records):
-    df = pd.DataFrame.from_records(records)
+        "severity_score": severity_score,
+        "cost_per_procedure": cost_per_procedure,
+        "patient_claim_count": patient_claim_count,
+        "biaya_anomaly_score": biaya_anomaly_score,
+        "cost_procedure_anomaly": 1 if cost_per_procedure > 500000 else 0,
+        "patient_frequency_risk": patient_frequency_risk,
 
-    # Ensure all columns exist
-    for c in numeric_cols + categorical_cols:
-        if c not in df.columns:
-            df[c] = None
+        "visit_year": dt.year,
+        "visit_month": dt.month,
+        "visit_day": dt.day,
 
-    # Encode categoricals
-    for c in categorical_cols:
-        df[c] = df[c].astype(str).fillna("__MISSING__")
-        enc = encoders[c]
-        df[c] = enc.transform(df[[c]])[c]
+        "diagnosis_procedure_score": diagnosis_procedure_score,
+        "diagnosis_drug_score": diagnosis_drug_score,
+        "diagnosis_vitamin_score": diagnosis_vitamin_score,
+        "treatment_consistency_score": treatment_consistency_score,
 
-    # Clean numeric
-    for c in numeric_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+        "procedure_mismatch_flag": procedure_mismatch_flag,
+        "drug_mismatch_flag": drug_mismatch_flag,
+        "vitamin_mismatch_flag": vitamin_mismatch_flag,
+        "mismatch_count": mismatch_count,
 
-    X = df[numeric_cols + categorical_cols]
-    dmatrix = xgb.DMatrix(X, feature_names=feature_names)
+        "visit_type": raw.get("visit_type"),
+        "department": raw.get("department"),
+        "icd10_primary_code": raw.get("icd10_primary_code"),
+    }
 
-    return df, dmatrix
+    return claim_id, feature_row
 
 # ================================================================
 # RULE-BASED SUSPICIOUS
@@ -179,47 +149,42 @@ def derive_suspicious(row):
 # ================================================================
 @models.cml_model
 def predict(data):
-    try:
-        if isinstance(data, str):
-            data = json.loads(data)
 
-        raw_records = data.get("raw_records")
-        if not raw_records:
-            return {"error": "raw_records must be provided"}
+    if isinstance(data, str):
+        data = json.loads(data)
 
-        processed_records = []
-        claim_ids = []
+    raw_records = data.get("raw_records")
+    if not raw_records:
+        return {"error": "raw_records must be provided"}
 
-        for raw in raw_records:
-            cid, feature_row = build_features_from_raw(raw)
-            if cid is None:
-                continue
-            claim_ids.append(cid)
-            processed_records.append(feature_row)
+    processed_records = []
+    claim_ids = []
 
-        df_raw, dmatrix = build_feature_df(processed_records)
+    for raw in raw_records:
+        cid, feature_row = build_features_from_raw(raw)
+        claim_ids.append(cid)
+        processed_records.append(feature_row)
 
-        y_raw = booster.predict(dmatrix)
-        y_calibrated = calibrator.predict(y_raw)
-        y_pred = (y_calibrated >= best_threshold).astype(int)
+    # Feature preparation and model prediction
+    df_raw, dmatrix = build_feature_df(processed_records)
 
-        results = []
+    y_raw = booster.predict(dmatrix)
+    y_calibrated = calibrator.predict(y_raw)
+    y_pred = (y_calibrated >= best_threshold).astype(int)
 
-        for i, cid in enumerate(claim_ids):
-            row = df_raw.iloc[i].to_dict()
-            suspicious = derive_suspicious(row)
+    results = []
 
-            results.append({
-                "claim_id": cid,
-                "fraud_score": float(y_calibrated[i]),
-                "model_flag": int(y_pred[i]),
-                "final_flag": int(y_pred[i]),
-                "suspicious_sections": suspicious,
-                "feature_importance": GLOBAL_FEATURE_IMPORTANCE
-            })
+    for i, cid in enumerate(claim_ids):
+        row = df_raw.iloc[i].to_dict()
+        suspicious = derive_suspicious(row)
 
-        return {"results": results}
-    
-    except Exception as e:
-        logger.error(f"Error in prediction: {e}")
-        return {"error": str(e)}
+        results.append({
+            "claim_id": cid,
+            "fraud_score": float(y_calibrated[i]),
+            "model_flag": int(y_pred[i]),
+            "final_flag": int(y_pred[i]),
+            "suspicious_sections": suspicious,
+            "feature_importance": GLOBAL_FEATURE_IMPORTANCE
+        })
+
+    return {"results": results}
