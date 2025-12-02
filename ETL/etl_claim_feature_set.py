@@ -207,4 +207,6 @@ feature_df = base.select(*final_cols)
 # For example:
 # feature_df.write.format("parquet").save("s3://your-bucket/fraud_feature_df.parquet")
 
+feature_df.write.format("iceberg").partitionBy("visit_year", "visit_month").mode("overwrite").saveAsTable("iceberg_curated.claim_feature_set")
+
 print("ETL process completed successfully.")
