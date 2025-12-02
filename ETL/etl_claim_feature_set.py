@@ -274,3 +274,6 @@ final_cols = [
     "created_at"
 ]
 feature_df = base.select(*final_cols)
+
+print("=== ETL v6 WITH MISMATCH FEATURES COMPLETED ===")
+spark.stop()
