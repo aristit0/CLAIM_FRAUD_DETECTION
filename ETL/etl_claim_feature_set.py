@@ -4,7 +4,7 @@ import cml.data_v1 as cmldata
 from pyspark.sql.functions import (
     col, lit, when, collect_list, first, year, month, dayofmonth,
     avg, stddev_pop, count, size, substring, current_timestamp,
-    abs as spark_abs
+    abs as spark_abs, array
 )
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
@@ -85,19 +85,24 @@ base = (
 # ================================================================
 # 7. CALCULATE PROCEDURE, DRUG, AND VITAMIN MATCHING SCORES
 # ================================================================
+# Example allowed lists for ICD9 codes, drugs, and vitamins
+allowed_icd9 = ["A01", "B02", "C03"]  # Sample ICD9 codes
+allowed_drug = ["D001", "D002", "D003"]  # Sample drug codes
+allowed_vit = ["Vitamin A", "Vitamin B", "Vitamin C"]  # Sample vitamin names
+
 base = base.withColumn(
     "diagnosis_procedure_score",
-    when(size(F.array_intersect("procedures_icd9_codes", "allowed_icd9")) > 0, 1.0).otherwise(0.0)
+    when(size(F.array_intersect("procedures_icd9_codes", array(*[lit(code) for code in allowed_icd9]))) > 0, 1.0).otherwise(0.0)
 )
 
 base = base.withColumn(
     "diagnosis_drug_score",
-    when(size(F.array_intersect("drug_codes", "allowed_drug")) > 0, 1.0).otherwise(0.0)
+    when(size(F.array_intersect("drug_codes", array(*[lit(code) for code in allowed_drug]))) > 0, 1.0).otherwise(0.0)
 )
 
 base = base.withColumn(
     "diagnosis_vitamin_score",
-    when(size(F.array_intersect("vitamin_names", "allowed_vit")) > 0, 1.0).otherwise(0.0)
+    when(size(F.array_intersect("vitamin_names", array(*[lit(name) for name in allowed_vit]))) > 0, 1.0).otherwise(0.0)
 )
 
 # ================================================================
