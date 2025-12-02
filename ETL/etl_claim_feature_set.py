@@ -42,16 +42,19 @@ diag_primary = (
 # ================================================================
 proc_agg = proc.groupBy("claim_id").agg(
     collect_list("icd9_code").alias("procedures_icd9_codes"),
-    collect_list("icd9_description").alias("procedures_icd9_descs")
+    collect_list("icd9_description").alias("procedures_icd9_descs"),
+    collect_list("cost").alias("procedures_cost")
 )
 
 drug_agg = drug.groupBy("claim_id").agg(
     collect_list("drug_code").alias("drug_codes"),
-    collect_list("drug_name").alias("drug_names")
+    collect_list("drug_name").alias("drug_names"),
+    collect_list("cost").alias("drug_cost")
 )
 
 vit_agg = vit.groupBy("claim_id").agg(
-    collect_list("vitamin_name").alias("vitamin_names")
+    collect_list("vitamin_name").alias("vitamin_names"),
+    collect_list("cost").alias("vitamin_cost")
 )
 
 # ================================================================

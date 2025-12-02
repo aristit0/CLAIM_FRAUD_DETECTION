@@ -3,9 +3,12 @@ from flask import Flask, render_template, request, redirect, session, jsonify
 import requests
 import mysql.connector
 import math
+from datetime import timedelta
 
 APP_SECRET = "supersecret"
 BACKEND_URL = "http://127.0.0.1:2222/score/"
+
+
 
 # ---------------------------
 # MySQL Connection
@@ -22,9 +25,18 @@ def db():
 
 
 app = Flask(__name__)
-app.secret_key = APP_SECRET
 
+# SECRET KEY (HARUS SATU, TIDAK BOLEH DOUBLE)
+app.secret_key = "supersecretkey_approval_ui"
 
+# FIX SESSION DROPPING
+app.config.update(
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=1),
+    SESSION_COOKIE_NAME="fraud_approval_session",
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SECURE=False  # <- kamu pakai HTTP, jadi FALSE
+)
 # ----------------------------
 # Custom Filter: Currency IDR
 # ----------------------------
@@ -45,20 +57,20 @@ def login():
         pw = request.form.get("password")
 
         if user == "aris" and pw == "Admin123":
-            session["logged_in"] = True
+            session.permanent = True
+            session["user"] = user     # cukup user saja
             return redirect("/dashboard")
 
         return render_template("login.html", error="Invalid username or password")
 
     return render_template("login.html")
 
-
 # ============================================================
 # DASHBOARD — PAGINATION 20 ROWS
 # ============================================================
 @app.route("/dashboard")
 def dashboard():
-    if "logged_in" not in session:
+    if "user" not in session:
         return redirect("/")
 
     page = int(request.args.get("page", 1))
@@ -133,7 +145,7 @@ def api_get_claim():
 # ============================================================
 @app.route("/review/<int:claim_id>")
 def review(claim_id):
-    if "logged_in" not in session:
+    if "user" not in session:
         return redirect("/")
 
     conn = db()
@@ -182,7 +194,7 @@ def review(claim_id):
 # ============================================================
 @app.route("/api/update_status/<int:claim_id>", methods=["POST"])
 def update_status(claim_id):
-    if "logged_in" not in session:
+    if "user" not in session:
         return jsonify({"error": "Unauthorized"}), 401
 
     new_status = request.json.get("status")
