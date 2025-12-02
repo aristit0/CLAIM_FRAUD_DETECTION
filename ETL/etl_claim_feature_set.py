@@ -10,7 +10,8 @@ from pyspark.sql.functions import (
 )
 from pyspark.sql.window import Window
 from pyspark.sql.types import DoubleType, IntegerType
-from pyspark.sql import udf
+from pyspark.sql.functions import udf
+
 
 # Import centralized config
 project_root = os.getcwd()
