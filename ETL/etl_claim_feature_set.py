@@ -4,7 +4,7 @@ import cml.data_v1 as cmldata
 from pyspark.sql import functions as F
 from pyspark.sql.functions import (
     col, lit, when, collect_list, first, year, month, dayofmonth, 
-    current_timestamp, size, array
+    current_timestamp, size, array, count
 )
 from pyspark.sql.window import Window
 
