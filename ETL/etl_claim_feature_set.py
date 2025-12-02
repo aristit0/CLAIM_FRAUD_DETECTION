@@ -8,7 +8,7 @@ from pyspark.sql.functions import (
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
-print("=== START FRAUD-ENHANCED ETL v5 WITH EXPLICIT MISMATCH FLAGS ===")
+print("=== START FRAUD-ENHANCED ETL v6 WITH EXPLICIT MISMATCH FLAGS ===")
 
 # ================================================================
 # 1. CONNECT TO SPARK
@@ -38,7 +38,7 @@ diag_primary = (
 )
 
 # ================================================================
-# 4. AGGREGATIONS
+# 4. AGGREGATIONS (PROCEDURES, DRUGS, VITAMINS)
 # ================================================================
 proc_agg = proc.groupBy("claim_id").agg(
     collect_list("icd9_code").alias("procedures_icd9_codes"),
@@ -119,7 +119,7 @@ base = (
 )
 
 # ================================================================
-# 10. LOAD CLINICAL COMPATIBILITY MAPS (reference)
+# 10. CLINICAL COMPATIBILITY MAPS (reference)
 # ================================================================
 MATRIX_SOURCE = "internal_guideline_v1"
 
@@ -167,27 +167,7 @@ base = base.withColumn(
 )
 
 # ================================================================
-# 11b. COST PER PROCEDURE (harus ada, sesuai DDL)
-# ================================================================
-base = base.withColumn(
-    "cost_per_procedure",
-    when(col("has_procedure") == 0, col("total_claim_amount"))
-    .otherwise(col("total_claim_amount") / col("has_procedure"))
-)
-
-# ================================================================
-# 11c. COST PROCEDURE ANOMALY FLAG
-# ================================================================
-base = base.withColumn(
-    "cost_procedure_anomaly",
-    when(
-        (col("cost_per_procedure") > col("mean_cost") + 2.0 * col("std_cost")),
-        1
-    ).otherwise(0)
-)
-
-# ================================================================
-# 12. *** NEW: EXPLICIT MISMATCH FLAGS ***
+# 12. EXPLICIT MISMATCH FLAGS (for fraud detection)
 # ================================================================
 base = base.withColumn(
     "procedure_mismatch_flag",
@@ -236,47 +216,11 @@ base = base.withColumn(
 )
 
 # ================================================================
-# 13b. LEGACY RULE FIELDS (BACKWARD COMPAT)
-# ================================================================
-base = (
-    base
-    # wariskan langsung dari skor baru
-    .withColumn("tindakan_validity_score", col("diagnosis_procedure_score"))
-    .withColumn("obat_validity_score", col("diagnosis_drug_score"))
-    .withColumn("vitamin_relevance_score", col("diagnosis_vitamin_score"))
-
-    # legacy mismatch fields berbasis flag baru
-    .withColumn(
-        "diagnosis_procedure_mismatch",
-        when(col("procedure_mismatch_flag") == 1, lit(1.0)).otherwise(lit(0.0))
-    )
-    .withColumn(
-        "drug_mismatch_score",
-        when(col("drug_mismatch_flag") == 1, lit(1.0)).otherwise(lit(0.0))
-    )
-
-    # reason sederhana (boleh dimodif nanti)
-    .withColumn(
-        "rule_violation_reason",
-        F.when(col("rule_violation_flag") == 0, lit(None).cast("string"))
-         .otherwise(
-             F.concat_ws(
-                 "; ",
-                 F.when(col("mismatch_count") > 0, lit("CLINICAL_MISMATCH")),
-                 F.when(col("biaya_anomaly_score") > 2.5, lit("COST_OUTLIER")),
-                 F.when(col("patient_frequency_risk") == 1, lit("HIGH_FREQUENCY_PATIENT"))
-             )
-         )
-    )
-)
-
-# ================================================================
 # 14. FINAL SELECT
 # ================================================================
 base = base.withColumn("created_at", current_timestamp())
 
 final_cols = [
-
     # CLAIM + PATIENT
     "claim_id",
     "patient_nik",
@@ -317,7 +261,7 @@ final_cols = [
     "diagnosis_vitamin_score",
     "treatment_consistency_score",
 
-    # EXPLICIT MISMATCH FLAGS (v5)
+    # EXPLICIT MISMATCH FLAGS
     "procedure_mismatch_flag",
     "drug_mismatch_flag",
     "vitamin_mismatch_flag",
@@ -358,5 +302,5 @@ feature_df = base.select(*final_cols)
               .overwritePartitions()
 )
 
-print("=== ETL v5 WITH MISMATCH FEATURES COMPLETED ===")
+print("=== ETL v6 WITH MISMATCH FEATURES COMPLETED ===")
 spark.stop()
