@@ -131,6 +131,32 @@ def build_features_from_raw(raw):
     return claim_id, feature_row
 
 # ================================================================
+# BUILD FEATURE DF
+# ================================================================
+def build_feature_df(records):
+    df = pd.DataFrame.from_records(records)
+
+    # Ensure all columns exist
+    for c in numeric_cols + categorical_cols:
+        if c not in df.columns:
+            df[c] = None
+
+    # Encode categoricals
+    for c in categorical_cols:
+        df[c] = df[c].astype(str).fillna("__MISSING__")
+        enc = encoders[c]
+        df[c] = enc.transform(df[[c]])[c]
+
+    # Clean numeric
+    for c in numeric_cols:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+
+    X = df[numeric_cols + categorical_cols]
+    dmatrix = xgb.DMatrix(X, feature_names=feature_names)
+
+    return df, dmatrix
+
+# ================================================================
 # RULE-BASED SUSPICIOUS
 # ================================================================
 def derive_suspicious(row):
