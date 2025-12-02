@@ -89,17 +89,14 @@ base = (
 allowed_icd9 = ["A01", "B02", "C03"]  # Sample ICD9 codes
 allowed_drug = ["D001", "D002", "D003"]  # Sample drug codes
 allowed_vit = ["Vitamin A", "Vitamin B", "Vitamin C"]  # Sample vitamin names
-
 base = base.withColumn(
     "diagnosis_procedure_score",
     when(size(F.array_intersect("procedures_icd9_codes", array(*[lit(code) for code in allowed_icd9]))) > 0, 1.0).otherwise(0.0)
 )
-
 base = base.withColumn(
     "diagnosis_drug_score",
     when(size(F.array_intersect("drug_codes", array(*[lit(code) for code in allowed_drug]))) > 0, 1.0).otherwise(0.0)
 )
-
 base = base.withColumn(
     "diagnosis_vitamin_score",
     when(size(F.array_intersect("vitamin_names", array(*[lit(name) for name in allowed_vit]))) > 0, 1.0).otherwise(0.0)
@@ -130,7 +127,17 @@ base = base.withColumn(
 )
 
 # ================================================================
-# 9. RULE FLAG + FINAL LABEL
+# 9. CALCULATE BIAYA ANOMALY SCORE (assuming it's based on cost data)
+# ================================================================
+base = base.withColumn(
+    "biaya_anomaly_score",
+    when(col("total_claim_amount") > 5000, 3)  # For example, scoring anomaly based on claim amount
+    .when(col("total_claim_amount") > 2000, 2)
+    .otherwise(1)
+)
+
+# ================================================================
+# 10. RULE FLAG + FINAL LABEL
 # ================================================================
 base = base.withColumn(
     "rule_violation_flag",
@@ -151,7 +158,7 @@ base = base.withColumn(
 )
 
 # ================================================================
-# 10. FINAL SELECT (including cost_per_procedure)
+# 11. FINAL SELECT (including cost_per_procedure)
 # ================================================================
 base = base.withColumn("created_at", current_timestamp())
 final_cols = [
@@ -229,7 +236,7 @@ final_cols = [
 feature_df = base.select(*final_cols)
 
 # ================================================================
-# 11. FINISHED ETL
+# 12. FINISHED ETL
 # ================================================================
 print("=== ETL v6 WITH MISMATCH FEATURES COMPLETED ===")
 spark.stop()
