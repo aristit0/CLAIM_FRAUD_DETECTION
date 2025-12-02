@@ -7,7 +7,6 @@ from pyspark.sql.functions import (
 )
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
-
 print("=== START FRAUD-ENHANCED ETL v6 WITH EXPLICIT MISMATCH FLAGS ===")
 
 # ================================================================
@@ -45,13 +44,11 @@ proc_agg = proc.groupBy("claim_id").agg(
     collect_list("icd9_description").alias("procedures_icd9_descs"),
     collect_list("cost").alias("procedures_cost")
 )
-
 drug_agg = drug.groupBy("claim_id").agg(
     collect_list("drug_code").alias("drug_codes"),
     collect_list("drug_name").alias("drug_names"),
     collect_list("cost").alias("drug_cost")
 )
-
 vit_agg = vit.groupBy("claim_id").agg(
     collect_list("vitamin_name").alias("vitamin_names"),
     collect_list("cost").alias("vitamin_cost")
@@ -92,7 +89,6 @@ severity_map = {
     "I": 3, "J": 1, "K": 2
 }
 mapping_expr = F.create_map([lit(x) for p in severity_map.items() for x in p])
-
 base = base.withColumn("icd10_first_letter", substring("icd10_primary_code", 1, 1))
 base = base.withColumn("severity_score", mapping_expr[col("icd10_first_letter")])
 
@@ -107,7 +103,6 @@ base = base.withColumn("patient_frequency_risk", when(col("patient_claim_count")
 # 9. COST Z-SCORE
 # ================================================================
 w_cost = Window.partitionBy("icd10_primary_code", "visit_type")
-
 base = (
     base.withColumn("mean_cost", avg("total_claim_amount").over(w_cost))
          .withColumn("std_cost", stddev_pop("total_claim_amount").over(w_cost))
@@ -122,19 +117,15 @@ base = (
 # 10. CLINICAL COMPATIBILITY MAPS (reference)
 # ================================================================
 MATRIX_SOURCE = "internal_guideline_v1"
-
 map_proc = spark.table("iceberg_ref.icd10_icd9_map") \
     .where(col("source") == MATRIX_SOURCE) \
     .groupBy("icd10_code").agg(F.collect_set("icd9_code").alias("allowed_icd9"))
-
 map_drug = spark.table("iceberg_ref.icd10_drug_map") \
     .where(col("source") == MATRIX_SOURCE) \
     .groupBy("icd10_code").agg(F.collect_set("drug_code").alias("allowed_drug"))
-
 map_vit = spark.table("iceberg_ref.icd10_vitamin_map") \
     .where(col("source") == MATRIX_SOURCE) \
     .groupBy("icd10_code").agg(F.collect_set("vitamin_name").alias("allowed_vit"))
-
 base = (
     base.join(map_proc, base.icd10_primary_code == map_proc.icd10_code, "left")
         .join(map_drug, base.icd10_primary_code == map_drug.icd10_code, "left")
@@ -148,17 +139,14 @@ base = base.withColumn(
     "diagnosis_procedure_score",
     when(size(F.array_intersect("procedures_icd9_codes","allowed_icd9")) > 0, 1.0).otherwise(0.0)
 )
-
 base = base.withColumn(
     "diagnosis_drug_score",
     when(size(F.array_intersect("drug_codes","allowed_drug")) > 0, 1.0).otherwise(0.0)
 )
-
 base = base.withColumn(
     "diagnosis_vitamin_score",
     when(size(F.array_intersect("vitamin_names","allowed_vit")) > 0, 1.0).otherwise(0.0)
 )
-
 base = base.withColumn(
     "treatment_consistency_score",
     col("diagnosis_procedure_score")*0.4 +
@@ -173,18 +161,15 @@ base = base.withColumn(
     "procedure_mismatch_flag",
     when(col("diagnosis_procedure_score") == 0, 1).otherwise(0)
 )
-
 base = base.withColumn(
     "drug_mismatch_flag",
     when(col("diagnosis_drug_score") == 0, 1).otherwise(0)
 )
-
 base = base.withColumn(
     "vitamin_mismatch_flag",
     when(col("diagnosis_vitamin_score") == 0, 1).otherwise(0)
 )
-
-# how many mismatches exist for this claim
+# How many mismatches exist for this claim
 base = base.withColumn(
     "mismatch_count",
     col("procedure_mismatch_flag") +
@@ -202,13 +187,11 @@ base = base.withColumn(
     .when(col("patient_frequency_risk") == 1, 1)
     .otherwise(0)
 )
-
 base = base.withColumn(
     "human_label",
     when(col("status") == "declined", 1)
     .when(col("status") == "approved", 0)
 )
-
 base = base.withColumn(
     "final_label",
     when(col("human_label").isNotNull(), col("human_label"))
@@ -219,7 +202,6 @@ base = base.withColumn(
 # 14. FINAL SELECT
 # ================================================================
 base = base.withColumn("created_at", current_timestamp())
-
 final_cols = [
     # CLAIM + PATIENT
     "claim_id",
@@ -291,16 +273,4 @@ final_cols = [
     # META
     "created_at"
 ]
-
 feature_df = base.select(*final_cols)
-
-# ================================================================
-# 15. WRITE TO ICEBERG
-# ================================================================
-(
-    feature_df.writeTo("iceberg_curated.claim_feature_set")
-              .overwritePartitions()
-)
-
-print("=== ETL v6 WITH MISMATCH FEATURES COMPLETED ===")
-spark.stop()

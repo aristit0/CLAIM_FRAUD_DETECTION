@@ -7,10 +7,7 @@ import pandas as pd
 import numpy as np
 import cml.data_v1 as cmldata
 import xgboost as xgb
-import seaborn as sns
-import matplotlib.pyplot as plt
-from pyspark.sql.functions import col  # <-- ADD THIS LINE
-from sklearn.model_selection import StratifiedKFold, train_test_split, GridSearchCV
+from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.metrics import (
     roc_auc_score, f1_score, precision_score, recall_score,
     classification_report, confusion_matrix
@@ -27,12 +24,12 @@ conn = cmldata.get_connection("CDP-MSI")
 spark = conn.get_spark_session()
 
 # =====================================================
-# 1. DEFINISI LABEL & FEATURE LIST (ALIGNED DENGAN ETL v5)
+# 1. DEFINISI LABEL & FEATURE LIST (ALIGNED DENGAN ETL v6)
 # =====================================================
 
 label_col = "final_label"
 
-# numeric features (sesuai schema df_spark.printSchema yang kamu kirim)
+# Numeric features (sesuai schema df_spark.printSchema yang kamu kirim)
 numeric_cols = [
     "patient_age",
     "total_procedure_cost",
@@ -49,20 +46,20 @@ numeric_cols = [
     "visit_month",
     "visit_day",
 
-    # CLINICAL COMPATIBILITY SCORES
+    # Clinical Compatibility Scores
     "diagnosis_procedure_score",
     "diagnosis_drug_score",
     "diagnosis_vitamin_score",
     "treatment_consistency_score",
 
-    # EXPLICIT MISMATCH FLAGS
+    # Explicit Mismatch Flags
     "procedure_mismatch_flag",
     "drug_mismatch_flag",
     "vitamin_mismatch_flag",
     "mismatch_count",
 ]
 
-# categorical yang kuat hubungannya dengan pola fraud
+# Categorical features that are strongly associated with fraud patterns
 categorical_cols = [
     "visit_type",
     "department",
@@ -86,7 +83,7 @@ df_spark = (
          .select(*all_cols)
 )
 
-# BATAS MAKSIMAL ROW UNTUK toPandas (kalau resource cukup bisa dinaikkan)
+# Max row limit for toPandas (can be increased if resources allow)
 MAX_ROWS = 300_000
 df_spark = df_spark.limit(MAX_ROWS)
 
@@ -103,11 +100,10 @@ print("Loaded pandas dataset:", df.shape)
 print("=== PREP LABEL ===")
 df[label_col] = df[label_col].astype(int)
 
-# (optional) log distribusi label
+# (optional) log distribution of label
 label_counts = df[label_col].value_counts()
 print("Label distribution:")
 print(label_counts)
-
 
 # =====================================================
 # 4. ENCODING CATEGORICAL (TARGET ENCODING)
@@ -212,7 +208,6 @@ model = xgb.train(
 print(f"Best iteration: {model.best_iteration}")
 print("Best score (AUC):", model.best_score)
 
-
 # =====================================================
 # 9. CALIBRATION (ISOTONIC REGRESSION)
 # =====================================================
@@ -227,10 +222,8 @@ iso.fit(y_proba_raw, y_test)
 # calibrated probability
 y_proba = iso.predict(y_proba_raw)
 
-
 # =====================================================
 # 10. THRESHOLD OPTIMIZATION (F1)
-#    - supaya suspicious flag lebih akurat
 # =====================================================
 print("=== THRESHOLD TUNING (F1) ===")
 
@@ -246,7 +239,6 @@ for t in thresholds:
         best_t = float(t)
 
 print(f"Best threshold: {best_t:.3f} | Best F1: {best_f1:.4f}")
-
 
 # =====================================================
 # 11. FINAL EVALUATION
@@ -270,7 +262,6 @@ print(cm)
 print("Classification report:")
 print(classification_report(y_test, y_pred))
 
-
 # =====================================================
 # 12. FEATURE IMPORTANCE (GAIN)
 # =====================================================
@@ -288,7 +279,6 @@ for i, (k, v) in enumerate(feature_scores.items()):
     if i >= 20:
         break
     print(f"{i+1:2d}. {k}: {v:.4f}")
-
 
 # =====================================================
 # 13. SAVE ARTIFACTS (MODEL + CALIBRATOR + PREPROCESS META)
@@ -326,9 +316,9 @@ meta_path = os.path.join(ROOT, "meta.json")
 with open(meta_path, "w") as f:
     json.dump(
         {
-            "description": "Fraud model v5 — mismatch-aware + calibrated",
+            "description": "Fraud model v6 — mismatch-aware + calibrated",
             "label_source": "human+rules",
-            "version": "v5",
+            "version": "v6",
             "n_rows": int(df.shape[0]),
             "n_features": int(len(feature_names)),
         },
