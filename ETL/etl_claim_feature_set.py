@@ -13,7 +13,8 @@ from pyspark.sql.types import DoubleType, IntegerType
 from pyspark.sql import udf
 
 # Import centralized config
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+project_root = os.getcwd()
+sys.path.insert(0, project_root)
 from config import COMPAT_RULES, COST_THRESHOLDS
 
 print("=" * 80)
