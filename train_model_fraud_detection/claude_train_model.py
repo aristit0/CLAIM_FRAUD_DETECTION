@@ -24,8 +24,8 @@ from imblearn.over_sampling import SMOTE
 from pyspark.sql.functions import col
 
 # Import config
-base_path = os.path.dirname(os.path.dirname(os.getcwd()))
-sys.path.insert(0, base_path)
+sys.path.insert(0, '/home/cdsw')  # Pastikan path ini ada
+
 from config import NUMERIC_FEATURES, CATEGORICAL_FEATURES, MODEL_HYPERPARAMETERS
 
 print("=" * 80)
