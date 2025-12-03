@@ -17,8 +17,6 @@ import sys
 import os
 
 # Import centralized config
-PROJECT_ROOT = "/home/cdsw"
-sys.path.insert(0, PROJECT_ROOT)
 from config import COMPAT_RULES_FALLBACK as COMPAT_RULES, FRAUD_PATTERNS, get_fraud_pattern_description
 
 # ================================================================
