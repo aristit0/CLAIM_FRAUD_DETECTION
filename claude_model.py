@@ -17,7 +17,7 @@ import sys
 import os
 
 # Import centralized config
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, '/home/cdsw')  # Pastikan path ini ada
 from config import COMPAT_RULES, FRAUD_PATTERNS, get_fraud_pattern_description
 
 # ================================================================
