@@ -315,82 +315,71 @@ base = base.withColumn(
 print("✓ Ground truth labels created")
 
 # ================================================================
-# 12. SELECT FINAL FEATURES & SAVE
+# 12. SELECT FINAL FEATURES WITH EXPLICIT CASTING
 # ================================================================
-print("\n[12/12] Selecting final feature set...")
+print("\n[12/12] Selecting final feature set with data type casting...")
 
 base = base.withColumn("created_at", current_timestamp())
 
-final_columns = [
-    # Identifiers
-    "claim_id",
-    "patient_nik",
-    "patient_name",
-    "patient_gender",
-    "patient_dob",
-    "patient_age",
-    
-    # Visit info
-    "visit_date",
-    "visit_year",
-    "visit_month",
-    "visit_day",
-    "visit_type",
-    "doctor_name",
-    "department",
-    
-    # Diagnosis
-    "icd10_primary_code",
-    "icd10_primary_desc",
-    
-    # Raw arrays (for reference/audit)
-    "procedures_icd9_codes",
-    "procedures_icd9_descs",
-    "drug_codes",
-    "drug_names",
-    "vitamin_names",
-    
-    # Costs
-    "total_procedure_cost",
-    "total_drug_cost",
-    "total_vitamin_cost",
-    "total_claim_amount",
-    
-    # Clinical compatibility scores (KEY FEATURES)
-    "diagnosis_procedure_score",
-    "diagnosis_drug_score",
-    "diagnosis_vitamin_score",
-    
-    # Mismatch flags (FRAUD INDICATORS)
-    "procedure_mismatch_flag",
-    "drug_mismatch_flag",
-    "vitamin_mismatch_flag",
-    "mismatch_count",
-    
-    # Risk features
-    "patient_frequency_risk",
-    "days_since_last_claim",
-    "suspicious_frequency_flag",
-    "biaya_anomaly_score",
-    
-    # Labels (GROUND TRUTH)
-    "rule_violation_flag",
-    "human_label",
-    "final_label",
-    
-    # Metadata
-    "status",
-    "created_at"
-]
+# Cast all columns explicitly to avoid Iceberg data type errors
+feature_df = base.select(
+    col("claim_id").cast("bigint"),
+    col("patient_nik").cast("string"),
+    col("patient_name").cast("string"),
+    col("patient_gender").cast("string"),
+    col("patient_dob").cast("date"),
+    col("patient_age").cast("int"),
+    col("visit_date").cast("date"),
+    col("visit_year").cast("int"),
+    col("visit_month").cast("int"),
+    col("visit_day").cast("int"),
+    col("visit_type").cast("string"),
+    col("doctor_name").cast("string"),
+    col("department").cast("string"),
+    col("icd10_primary_code").cast("string"),
+    col("icd10_primary_desc").cast("string"),
+    col("procedures_icd9_codes"),  # Arrays don't need casting
+    col("procedures_icd9_descs"),
+    col("drug_codes"),
+    col("drug_names"),
+    col("vitamin_names"),
+    col("total_procedure_cost").cast("double"),
+    col("total_drug_cost").cast("double"),
+    col("total_vitamin_cost").cast("double"),
+    col("total_claim_amount").cast("double"),
+    col("diagnosis_procedure_score").cast("double"),
+    col("diagnosis_drug_score").cast("double"),
+    col("diagnosis_vitamin_score").cast("double"),
+    col("procedure_mismatch_flag").cast("int"),
+    col("drug_mismatch_flag").cast("int"),
+    col("vitamin_mismatch_flag").cast("int"),
+    col("mismatch_count").cast("int"),
+    col("patient_frequency_risk").cast("bigint"),
+    when(col("days_since_last_claim").isNull(), lit(None))
+        .otherwise(col("days_since_last_claim")).cast("int").alias("days_since_last_claim"),
+    col("suspicious_frequency_flag").cast("int"),
+    col("biaya_anomaly_score").cast("int"),
+    col("rule_violation_flag").cast("int"),
+    col("human_label").cast("int"),
+    col("final_label").cast("int"),
+    col("status").cast("string"),
+    col("created_at").cast("timestamp")
+)
 
-feature_df = base.select(*final_columns)
+print("✓ Data types cast successfully")
 
-# Save to Iceberg
+# Save to Iceberg with overwrite mode and schema enforcement
 print("\nSaving to Iceberg curated table...")
 
+# Drop table if exists to avoid schema conflicts
+spark.sql("DROP TABLE IF EXISTS iceberg_curated.claim_feature_set")
+
+# Write with explicit schema
 feature_df.write.format("iceberg") \
     .partitionBy("visit_year", "visit_month") \
     .mode("overwrite") \
+    .option("write.format.default", "parquet") \
+    .option("write.parquet.compression-codec", "snappy") \
     .saveAsTable("iceberg_curated.claim_feature_set")
 
 print("✓ Feature set saved to: iceberg_curated.claim_feature_set")
