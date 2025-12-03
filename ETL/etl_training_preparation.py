@@ -3,262 +3,335 @@
 import sys
 import os
 import cml.data_v1 as cmldata
-from pyspark.sql import SparkSession, Window
 from pyspark.sql import functions as F
-from pyspark.sql.types import DoubleType, ArrayType, StringType
 from pyspark.sql.functions import (
-    col, lit, when, year, month, dayofmonth, 
-    count, sum as spark_sum, avg, lag, stddev, 
-    collect_list, size, unix_timestamp, current_timestamp
+    col, lit, when, collect_list, first, year, month, dayofmonth,
+    current_timestamp, size, array, count, sum as spark_sum, avg, stddev
 )
+from pyspark.sql.window import Window
+from pyspark.sql.types import DoubleType, IntegerType
+from pyspark.sql import udf
 
 # ==============================================================================
-# 1. SETUP PATH & IMPORT CONFIG (SIMPLIFIED & ROBUST)
+# 1. SETUP PATH & IMPORT CONFIG (ROBUST VERSION)
 # ==============================================================================
-# Deteksi apakah kita di root project atau di folder ETL
-current_working_dir = os.getcwd()
-print(f"Current Working Directory: {current_working_dir}")
-
-# Logika sederhana: Jika 'config.py' tidak ada di folder ini, coba naik satu level
-if not os.path.exists(os.path.join(current_working_dir, "config.py")):
-    # Coba cek di parent directory
-    parent_dir = os.path.dirname(current_working_dir)
-    if os.path.exists(os.path.join(parent_dir, "config.py")):
-        print(f"Found config.py in parent directory: {parent_dir}")
-        sys.path.insert(0, parent_dir)
-    else:
-        # Fallback terakhir: Coba tambahkan folder '/home/cdsw' (default CML)
-        print("config.py not found in CWD or parent. Trying /home/cdsw...")
-        sys.path.insert(0, "/home/cdsw")
-else:
-    print("Found config.py in current directory.")
-    sys.path.insert(0, current_working_dir)
-
 try:
-    from config import COMPAT_RULES
+    # Coba deteksi path script saat ini
+    current_working_dir = os.getcwd()
+    print(f"Current Working Directory: {current_working_dir}")
+    
+    # Logika pencarian config.py yang fleksibel
+    project_root = None
+    
+    # 1. Cek di direktori saat ini
+    if os.path.exists(os.path.join(current_working_dir, "config.py")):
+        project_root = current_working_dir
+    # 2. Cek di parent directory (jika script di dalam folder ETL)
+    elif os.path.exists(os.path.join(os.path.dirname(current_working_dir), "config.py")):
+        project_root = os.path.dirname(current_working_dir)
+    # 3. Fallback ke root default CML
+    else:
+        project_root = "/home/cdsw"
+
+    # Tambahkan ke sys.path jika belum ada
+    if project_root and project_root not in sys.path:
+        sys.path.insert(0, project_root)
+        
+    print(f"Project root set to: {project_root}")
+
+    from config import COMPAT_RULES, COST_THRESHOLDS
     print(f"✓ Successfully loaded {len(COMPAT_RULES)} rules from config.py")
+
 except ImportError:
-    print("✗ CRITICAL ERROR: config.py not found anywhere. Please ensure it exists.")
-    # Agar script tidak crash total saat interactive run, kita set empty rules
+    print("⚠ WARNING: config.py not found. Using empty rules. Logic might be impacted.")
     COMPAT_RULES = {}
+    COST_THRESHOLDS = {}
+
+print("=" * 80)
+print("FRAUD DETECTION ETL - FEATURE ENGINEERING PIPELINE")
+print("=" * 80)
 
 # ==============================================================================
-# 2. SETUP SPARK SESSION
+# 2. CONNECT TO SPARK
 # ==============================================================================
-print("Initializing Spark Session...")
-spark = None # Initialize as None to handle clean exit
+print("\n[1/10] Connecting to Spark...")
+spark = None
 try:
     conn = cmldata.get_connection("CDP-MSI")
     spark = conn.get_spark_session()
-    print(f"✓ Spark Session Created. App ID: {spark.sparkContext.applicationId}")
+    print(f"✓ Spark Application ID: {spark.sparkContext.applicationId}")
 except Exception as e:
     print(f"✗ Error connecting to Spark: {e}")
-    # If in script mode, exit. If interactive, print error.
-    if __name__ == "__main__" and not hasattr(sys, 'ps1'): 
+    # Exit jika dijalankan sebagai script
+    if __name__ == "__main__" and not hasattr(sys, 'ps1'):
         sys.exit(1)
 
 if spark is None:
-    print("Stopping execution because Spark Session failed to initialize.")
-    # Stop execution here for interactive mode
     raise RuntimeError("Spark Initialization Failed")
 
 # ==============================================================================
-# 3. LOAD RAW DATA (FROM ICEBERG RAW)
+# 3. LOAD RAW TABLES
 # ==============================================================================
-print("Loading raw data from Iceberg...")
-
+print("\n[2/10] Loading raw tables from Iceberg...")
 try:
-    df_header = spark.table("iceberg_raw.claim_header_raw")
-    df_diag   = spark.table("iceberg_raw.claim_diagnosis_raw")
-    df_proc   = spark.table("iceberg_raw.claim_procedure_raw")
-    df_drug   = spark.table("iceberg_raw.claim_drug_raw")
-    df_vit    = spark.table("iceberg_raw.claim_vitamin_raw")
-    
-    # Check if data exists
-    if df_header.count() == 0:
+    # Load Tables
+    hdr = spark.table("iceberg_raw.claim_header_raw")
+    diag = spark.table("iceberg_raw.claim_diagnosis_raw")
+    proc = spark.table("iceberg_raw.claim_procedure_raw")
+    drug = spark.table("iceberg_raw.claim_drug_raw")
+    vit = spark.table("iceberg_raw.claim_vitamin_raw")
+
+    row_count = hdr.count()
+    if row_count == 0:
         print("⚠ WARNING: Table iceberg_raw.claim_header_raw is empty!")
     else:
-        print(f"✓ Loaded {df_header.count()} rows from header.")
+        print(f"✓ Loaded {row_count:,} claims")
         
 except Exception as e:
     print(f"✗ Error loading tables: {e}")
-    if spark: spark.stop()
+    spark.stop()
     raise e
 
-# Filter: Hanya ambil klaim yang statusnya sudah final
-df_header = df_header.filter(col("status").isin("approved", "declined"))
-
 # ==============================================================================
-# 4. DATA FLATTENING & AGGREGATION
+# 4. PRIMARY DIAGNOSIS
 # ==============================================================================
-print("Aggregating items per claim...")
-
-# 4.1 Diagnosis Utama
-df_diag_primary = df_diag.filter(col("is_primary") == 1).select(
-    col("claim_id"), 
-    col("icd10_code").alias("icd10_primary")
+print("\n[3/10] Extracting primary diagnosis...")
+diag_primary = (
+    diag.where(col("is_primary") == 1)
+        .groupBy("claim_id")
+        .agg(
+            first("icd10_code").alias("icd10_primary_code"),
+            first("icd10_description").alias("icd10_primary_desc")
+        )
 )
 
-# 4.2 Prosedur
-df_proc_agg = df_proc.groupBy("claim_id").agg(
-    collect_list("icd9_code").alias("proc_codes"),
-    spark_sum("cost").alias("calc_proc_cost")
+# ==============================================================================
+# 5. AGGREGATIONS
+# ==============================================================================
+print("\n[4/10] Aggregating procedures, drugs, vitamins...")
+proc_agg = proc.groupBy("claim_id").agg(
+    collect_list("icd9_code").alias("procedures_icd9_codes"),
+    collect_list("icd9_description").alias("procedures_icd9_descs"),
+    collect_list("cost").alias("procedures_costs")
 )
 
-# 4.3 Obat
-df_drug_agg = df_drug.groupBy("claim_id").agg(
+drug_agg = drug.groupBy("claim_id").agg(
     collect_list("drug_code").alias("drug_codes"),
-    spark_sum("cost").alias("calc_drug_cost")
+    collect_list("drug_name").alias("drug_names"),
+    collect_list("cost").alias("drug_costs")
 )
 
-# 4.4 Vitamin
-df_vit_agg = df_vit.groupBy("claim_id").agg(
-    collect_list("vitamin_name").alias("vit_names"),
-    spark_sum("cost").alias("calc_vit_cost")
+vit_agg = vit.groupBy("claim_id").agg(
+    collect_list("vitamin_name").alias("vitamin_names"),
+    collect_list("cost").alias("vitamin_costs")
 )
 
-# 4.5 Join Semua
-base_df = df_header.join(df_diag_primary, "claim_id", "left") \
-                   .join(df_proc_agg, "claim_id", "left") \
-                   .join(df_drug_agg, "claim_id", "left") \
-                   .join(df_vit_agg, "claim_id", "left")
-
-# 4.6 Fill Null & Casting
-base_df = base_df.fillna(0, subset=["calc_proc_cost", "calc_drug_cost", "calc_vit_cost"]) \
-                 .withColumn("total_claim_amount", col("total_claim_amount").cast("double"))
-
 # ==============================================================================
-# 5. FEATURE ENGINEERING: CLINICAL COMPATIBILITY (Fixed UDF)
+# 6. JOIN ALL DATA
 # ==============================================================================
-print("Calculating clinical compatibility scores...")
-
-# Broadcast rules
-rules_bc = spark.sparkContext.broadcast(COMPAT_RULES)
-
-# Pure Python function logic
-def calculate_clinical_score_logic(diagnosis, items, item_type):
-    if not diagnosis or not items:
-        return 0.5
-    
-    rule = rules_bc.value.get(diagnosis)
-    if not rule:
-        return 0.5 
-    
-    valid_list = rule.get(item_type, [])
-    if not valid_list:
-        return 0.5
-        
-    match_count = sum(1 for x in items if x in valid_list)
-    
-    if len(items) == 0:
-        return 1.0
-        
-    return float(match_count) / len(items)
-
-# Define UDFs explicitly using F.udf
-# NOTE: Removed the @udf decorator which caused TypeError
-score_proc_udf = F.udf(lambda d, i: calculate_clinical_score_logic(d, i, "procedures"), DoubleType())
-score_drug_udf = F.udf(lambda d, i: calculate_clinical_score_logic(d, i, "drugs"), DoubleType())
-score_vit_udf  = F.udf(lambda d, i: calculate_clinical_score_logic(d, i, "vitamins"), DoubleType())
-
-# Apply UDFs
-base_df = base_df.withColumn("score_proc", score_proc_udf("icd10_primary", "proc_codes")) \
-                 .withColumn("score_drug", score_drug_udf("icd10_primary", "drug_codes")) \
-                 .withColumn("score_vit",  score_vit_udf("icd10_primary", "vit_names"))
-
-# ==============================================================================
-# 6. FEATURE ENGINEERING: PATIENT HISTORY (Window Functions)
-# ==============================================================================
-print("Generating historical features (Windowing)...")
-
-w_patient = Window.partitionBy("patient_nik").orderBy(col("visit_date").cast("timestamp").cast("long"))
-w_30d = w_patient.rangeBetween(-30 * 86400, -1)
-
-base_df = base_df.withColumn("visit_ts", col("visit_date").cast("timestamp").cast("long"))
-
-base_df = base_df.withColumn(
-    "patient_visit_last_30d", 
-    count("claim_id").over(w_30d)
-).withColumn(
-    "patient_amount_last_30d", 
-    spark_sum("total_claim_amount").over(w_30d)
-).withColumn(
-    "prev_visit_ts", 
-    lag("visit_ts", 1).over(w_patient)
-).withColumn(
-    "days_since_last_visit",
-    (col("visit_ts") - col("prev_visit_ts")) / 86400
+print("\n[5/10] Joining all tables...")
+base = (
+    hdr.join(diag_primary, "claim_id", "left")
+       .join(proc_agg, "claim_id", "left")
+       .join(drug_agg, "claim_id", "left")
+       .join(vit_agg, "claim_id", "left")
 )
 
-base_df = base_df.fillna(0, subset=["patient_visit_last_30d", "patient_amount_last_30d"]) \
-                 .fillna(999, subset=["days_since_last_visit"])
-
 # ==============================================================================
-# 7. FEATURE ENGINEERING: PROVIDER PROFILING (Statistical Z-Score)
+# 7. BASIC FEATURES (DATE, AGE, FLAGS)
 # ==============================================================================
-print("Generating cost anomaly features (Z-Score)...")
-
-w_diagnosis = Window.partitionBy("icd10_primary")
-
-base_df = base_df.withColumn("avg_cost_diagnosis", avg("total_claim_amount").over(w_diagnosis)) \
-                 .withColumn("std_cost_diagnosis", stddev("total_claim_amount").over(w_diagnosis))
-
-base_df = base_df.withColumn(
-    "cost_z_score", 
-    (col("total_claim_amount") - col("avg_cost_diagnosis")) / (col("std_cost_diagnosis") + 0.01)
+print("\n[6/10] Creating basic features...")
+base = (
+    base.withColumn("patient_age",
+        when(col("patient_dob").isNull(), None)
+        .otherwise(year(col("visit_date")) - year(col("patient_dob")))
+    )
+    .withColumn("visit_year", year("visit_date"))
+    .withColumn("visit_month", month("visit_date"))
+    .withColumn("visit_day", dayofmonth("visit_date"))
+    .withColumn("has_procedure", when(size("procedures_icd9_codes") > 0, 1).otherwise(0))
+    .withColumn("has_drug", when(size("drug_codes") > 0, 1).otherwise(0))
+    .withColumn("has_vitamin", when(size("vitamin_names") > 0, 1).otherwise(0))
 )
 
-base_df = base_df.fillna(0, subset=["cost_z_score"])
+# ==============================================================================
+# 8. CLINICAL COMPATIBILITY CHECKING (KEY FEATURE!)
+# ==============================================================================
+print("\n[7/10] Checking clinical compatibility...")
+
+# Create broadcast variable for COMPAT_RULES
+compat_broadcast = spark.sparkContext.broadcast(COMPAT_RULES)
+
+# --- Pure Python Logic Functions ---
+def compute_procedure_compatibility_logic(icd10, procedures):
+    if not icd10 or not procedures: return 0.0
+    rules = compat_broadcast.value.get(icd10)
+    if not rules: return 0.5
+    allowed = rules.get("procedures", [])
+    if not allowed: return 0.5
+    matches = sum(1 for p in procedures if p in allowed)
+    return float(matches) / len(procedures)
+
+def compute_drug_compatibility_logic(icd10, drugs):
+    if not icd10 or not drugs: return 0.0
+    rules = compat_broadcast.value.get(icd10)
+    if not rules: return 0.5
+    allowed = rules.get("drugs", [])
+    if not allowed: return 0.5
+    matches = sum(1 for d in drugs if d in allowed)
+    return float(matches) / len(drugs)
+
+def compute_vitamin_compatibility_logic(icd10, vitamins):
+    if not icd10 or not vitamins: return 0.0
+    rules = compat_broadcast.value.get(icd10)
+    if not rules: return 0.5
+    allowed = rules.get("vitamins", [])
+    if not allowed: return 0.5
+    matches = sum(1 for v in vitamins if v in allowed)
+    return float(matches) / len(vitamins)
+
+# --- Define UDFs (Using F.udf to avoid Decorator TypeError) ---
+compute_proc_udf = F.udf(lambda d, i: compute_procedure_compatibility_logic(d, i), DoubleType())
+compute_drug_udf = F.udf(lambda d, i: compute_drug_compatibility_logic(d, i), DoubleType())
+compute_vit_udf  = F.udf(lambda d, i: compute_vitamin_compatibility_logic(d, i), DoubleType())
+
+# Apply compatibility checks
+base = base.withColumn("diagnosis_procedure_score", compute_proc_udf(col("icd10_primary_code"), col("procedures_icd9_codes")))
+base = base.withColumn("diagnosis_drug_score", compute_drug_udf(col("icd10_primary_code"), col("drug_codes")))
+base = base.withColumn("diagnosis_vitamin_score", compute_vit_udf(col("icd10_primary_code"), col("vitamin_names")))
 
 # ==============================================================================
-# 8. LABELING & CLEANUP
+# 9. MISMATCH FLAGS (BINARY INDICATORS)
 # ==============================================================================
-print("Finalizing dataset...")
+print("\n[8/10] Creating mismatch flags...")
+base = base.withColumn("procedure_mismatch_flag", when(col("diagnosis_procedure_score") < 0.5, 1).otherwise(0)) \
+           .withColumn("drug_mismatch_flag", when(col("diagnosis_drug_score") < 0.5, 1).otherwise(0)) \
+           .withColumn("vitamin_mismatch_flag", when(col("diagnosis_vitamin_score") < 0.5, 1).otherwise(0))
 
-base_df = base_df.withColumn("label", when(col("status") == "declined", 1).otherwise(0))
+base = base.withColumn("mismatch_count", col("procedure_mismatch_flag") + col("drug_mismatch_flag") + col("vitamin_mismatch_flag"))
 
-base_df = base_df.withColumn("visit_year", year("visit_date")) \
-                 .withColumn("visit_month", month("visit_date")) \
-                 .withColumn("visit_day", dayofmonth("visit_date"))
+# ==============================================================================
+# 10. COST ANOMALY DETECTION (STATISTICAL)
+# ==============================================================================
+print("\n[9/10] Detecting cost anomalies...")
+
+# Calculate z-score for costs per diagnosis
+diagnosis_window = Window.partitionBy("icd10_primary_code")
+
+base = base.withColumn("diagnosis_avg_cost", avg("total_claim_amount").over(diagnosis_window)) \
+           .withColumn("diagnosis_stddev_cost", stddev("total_claim_amount").over(diagnosis_window)) \
+           .withColumn("cost_zscore", 
+               (col("total_claim_amount") - col("diagnosis_avg_cost")) / 
+               when(col("diagnosis_stddev_cost") == 0, 1).otherwise(col("diagnosis_stddev_cost"))
+           ) \
+           .withColumn("biaya_anomaly_score",
+               when(col("cost_zscore") > 3, 4)
+               .when(col("cost_zscore") > 2, 3)
+               .when(col("cost_zscore") > 1, 2)
+               .otherwise(1)
+           )
+
+# Drop intermediate columns
+base = base.drop("diagnosis_avg_cost", "diagnosis_stddev_cost", "cost_zscore")
+
+# ==============================================================================
+# 11. PATIENT FREQUENCY RISK
+# ==============================================================================
+print("\n[10/10] Calculating patient frequency...")
+patient_freq = base.groupBy("patient_nik").agg(count("claim_id").alias("patient_frequency_risk"))
+base = base.join(patient_freq, "patient_nik", "left")
+
+# ==============================================================================
+# 12. FINAL LABEL (GROUND TRUTH)
+# ==============================================================================
+print("\nCreating final labels...")
+
+base = base.withColumn("human_label",
+    when(col("status") == "declined", 1)
+    .when(col("status") == "approved", 0)
+    .otherwise(None)
+)
+
+base = base.withColumn("rule_violation_flag",
+    when(col("mismatch_count") > 0, 1)
+    .when(col("biaya_anomaly_score") >= 3, 1)
+    .when(col("patient_frequency_risk") > 10, 1)
+    .otherwise(0)
+)
+
+base = base.withColumn("final_label",
+    when(col("human_label").isNotNull(), col("human_label"))
+    .otherwise(col("rule_violation_flag"))
+)
+
+# ==============================================================================
+# 13. SELECT FINAL FEATURES
+# ==============================================================================
+base = base.withColumn("created_at", current_timestamp())
 
 final_columns = [
-    "claim_id", "visit_date", "patient_nik", "doctor_name", "department", 
-    "icd10_primary", "status",
-    "patient_age", "total_claim_amount", 
-    "calc_proc_cost", "calc_drug_cost", "calc_vit_cost",
-    "score_proc", "score_drug", "score_vit",
-    "patient_visit_last_30d", "patient_amount_last_30d", "days_since_last_visit",
-    "cost_z_score",
-    "label",
-    "visit_year", "visit_month"
+    "claim_id", "patient_nik", "patient_name", "patient_gender", "patient_dob", "patient_age",
+    "visit_date", "visit_year", "visit_month", "visit_day", "visit_type", "doctor_name", "department",
+    "icd10_primary_code", "icd10_primary_desc",
+    "procedures_icd9_codes", "procedures_icd9_descs", "drug_codes", "drug_names", "vitamin_names",
+    "total_procedure_cost", "total_drug_cost", "total_vitamin_cost", "total_claim_amount",
+    "diagnosis_procedure_score", "diagnosis_drug_score", "diagnosis_vitamin_score",
+    "procedure_mismatch_flag", "drug_mismatch_flag", "vitamin_mismatch_flag", "mismatch_count",
+    "patient_frequency_risk", "biaya_anomaly_score",
+    "rule_violation_flag", "human_label", "final_label", "created_at"
 ]
 
-df_final = base_df.fillna("UNKNOWN", subset=["doctor_name", "department", "icd10_primary"]) \
-                  .select(final_columns)
+feature_df = base.select(*final_columns)
 
 # ==============================================================================
-# 9. WRITE TO ICEBERG CURATED
+# 14. SAVE TO ICEBERG
 # ==============================================================================
-target_table = "iceberg_curated.claim_training_set"
-print(f"Writing result to {target_table}...")
-
-spark.sql("CREATE DATABASE IF NOT EXISTS iceberg_curated")
+target_table = "iceberg_curated.claim_feature_set"
+print(f"\nSaving to Iceberg curated table: {target_table}")
 
 try:
-    df_final.write \
-        .format("iceberg") \
-        .mode("overwrite") \
-        .partitionBy("visit_year", "visit_month") \
-        .saveAsTable(target_table)
-    
-    print(f"✓ ETL Selesai. Data siap digunakan untuk training di: {target_table}")
-    
-    # Tampilkan sample data jika berhasil
-    print("Sample Data:")
-    df_final.show(5)
-    
+    if feature_df.count() > 0:
+        feature_df.write.format("iceberg") \
+            .partitionBy("visit_year", "visit_month") \
+            .mode("overwrite") \
+            .saveAsTable(target_table)
+        print(f"✓ Data successfully saved to {target_table}")
+    else:
+        print("⚠ WARNING: Result DataFrame is empty. Nothing written.")
+
 except Exception as e:
     print(f"✗ Error writing to Iceberg: {e}")
 
-if spark:
-    spark.stop()
+# ==============================================================================
+# 15. DATA QUALITY REPORT
+# ==============================================================================
+print("\n" + "=" * 80)
+print("ETL COMPLETE - DATA QUALITY REPORT")
+print("=" * 80)
+
+total_claims = feature_df.count()
+if total_claims > 0:
+    fraud_count = feature_df.filter(col("final_label") == 1).count()
+    non_fraud_count = total_claims - fraud_count
+
+    print(f"Total claims processed: {total_claims:,}")
+    print(f"Fraud claims: {fraud_count:,} ({fraud_count/total_claims*100:.1f}%)")
+    print(f"Non-fraud claims: {non_fraud_count:,} ({non_fraud_count/total_claims*100:.1f}%)")
+
+    print("\nMismatch distribution:")
+    mismatch_dist = feature_df.groupBy("mismatch_count").count().orderBy("mismatch_count").collect()
+    for row in mismatch_dist:
+        print(f"  {row['mismatch_count']} mismatches: {row['count']:,} claims")
+
+    print("\nCost anomaly distribution:")
+    anomaly_dist = feature_df.groupBy("biaya_anomaly_score").count().orderBy("biaya_anomaly_score").collect()
+    for row in anomaly_dist:
+        print(f"  Score {row['biaya_anomaly_score']}: {row['count']:,} claims")
+else:
+    print("No data processed.")
+
+print("\n" + "=" * 80)
+print(f"Feature set ready for training at: {target_table}")
+print("=" * 80)
+
+spark.stop()
