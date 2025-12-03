@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Production ETL Pipeline for Fraud Detection
+Uses Iceberg reference tables for clinical rules
 Learns from historical approved/declined claims
-Extracts features for model training and inference
 """
 
 import sys
@@ -12,33 +12,72 @@ from pyspark.sql import functions as F
 from pyspark.sql.functions import (
     col, lit, when, collect_list, first, year, month, dayofmonth,
     current_timestamp, size, array, count, sum as spark_sum, avg, stddev,
-    datediff, lag, max as spark_max, udf as spark_udf  # FIX: Import udf correctly
+    datediff, lag, max as spark_max, coalesce, explode, array_intersect
 )
 from pyspark.sql.window import Window
 from pyspark.sql.types import DoubleType, IntegerType, StringType, ArrayType
 
-# Import centralized config
-base_path = os.path.dirname(os.path.dirname(os.getcwd()))
-sys.path.insert(0, base_path)
-from config import COMPAT_RULES, COST_THRESHOLDS, NUMERIC_FEATURES, CATEGORICAL_FEATURES
-
 print("=" * 80)
 print("FRAUD DETECTION ETL - PRODUCTION PIPELINE")
-print("Learning from Historical Claims (Approved/Declined)")
+print("Using Iceberg Reference Tables for Clinical Rules")
 print("=" * 80)
 
 # ================================================================
 # 1. CONNECT TO SPARK
 # ================================================================
-print("\n[1/12] Connecting to Spark...")
+print("\n[1/13] Connecting to Spark...")
 conn = cmldata.get_connection("CDP-MSI")
 spark = conn.get_spark_session()
 print(f"✓ Spark Application ID: {spark.sparkContext.applicationId}")
 
 # ================================================================
-# 2. LOAD RAW TABLES
+# 2. LOAD REFERENCE TABLES (CLINICAL RULES)
 # ================================================================
-print("\n[2/12] Loading raw tables from Iceberg...")
+print("\n[2/13] Loading clinical reference tables...")
+
+# Load clinical rules from Iceberg
+ref_dx_drug = spark.sql("SELECT * FROM iceberg_ref.clinical_rule_dx_drug")
+ref_dx_proc = spark.sql("SELECT * FROM iceberg_ref.clinical_rule_dx_procedure")
+ref_dx_vit = spark.sql("SELECT * FROM iceberg_ref.clinical_rule_dx_vitamin")
+
+# Load master tables
+master_icd10 = spark.sql("SELECT * FROM iceberg_ref.master_icd10")
+master_icd9 = spark.sql("SELECT * FROM iceberg_ref.master_icd9")
+master_drug = spark.sql("SELECT * FROM iceberg_ref.master_drug")
+master_vitamin = spark.sql("SELECT * FROM iceberg_ref.master_vitamin")
+
+print(f"✓ Loaded reference tables:")
+print(f"  - Clinical rules: {ref_dx_drug.count()} drug rules, {ref_dx_proc.count()} procedure rules, {ref_dx_vit.count()} vitamin rules")
+print(f"  - Master data: {master_icd10.count()} ICD-10, {master_icd9.count()} ICD-9, {master_drug.count()} drugs, {master_vitamin.count()} vitamins")
+
+# Create lookup dictionaries as broadcast variables
+# For procedures
+ref_proc_allowed = (
+    ref_dx_proc
+    .groupBy("icd10_code")
+    .agg(collect_list("icd9_code").alias("allowed_procedures"))
+)
+
+# For drugs
+ref_drug_allowed = (
+    ref_dx_drug
+    .groupBy("icd10_code")
+    .agg(collect_list("drug_code").alias("allowed_drugs"))
+)
+
+# For vitamins
+ref_vit_allowed = (
+    ref_dx_vit
+    .groupBy("icd10_code")
+    .agg(collect_list("vitamin_name").alias("allowed_vitamins"))
+)
+
+print("✓ Clinical compatibility rules prepared")
+
+# ================================================================
+# 3. LOAD RAW TABLES
+# ================================================================
+print("\n[3/13] Loading raw claim tables from Iceberg...")
 hdr = spark.sql("SELECT * FROM iceberg_raw.claim_header_raw")
 diag = spark.sql("SELECT * FROM iceberg_raw.claim_diagnosis_raw")
 proc = spark.sql("SELECT * FROM iceberg_raw.claim_procedure_raw")
@@ -49,9 +88,9 @@ total_claims = hdr.count()
 print(f"✓ Loaded {total_claims:,} claims")
 
 # ================================================================
-# 3. EXTRACT PRIMARY DIAGNOSIS + VALIDATION
+# 4. EXTRACT PRIMARY DIAGNOSIS
 # ================================================================
-print("\n[3/12] Extracting primary diagnosis...")
+print("\n[4/13] Extracting primary diagnosis...")
 diag_primary = (
     diag.where(col("is_primary") == 1)
         .groupBy("claim_id")
@@ -61,21 +100,24 @@ diag_primary = (
         )
 )
 
-# After join, fill missing diagnosis
-base = base.withColumn(
-    "icd10_primary_code",
-    when(col("icd10_primary_code").isNull(), lit("UNKNOWN"))
-    .otherwise(col("icd10_primary_code"))
+# Enrich with master ICD-10 description if missing
+diag_primary = diag_primary.join(
+    master_icd10.select(
+        col("code").alias("icd10_master_code"),
+        col("description").alias("icd10_master_desc")
+    ),
+    diag_primary.icd10_primary_code == col("icd10_master_code"),
+    "left"
 ).withColumn(
     "icd10_primary_desc",
-    when(col("icd10_primary_desc").isNull(), lit("Unknown diagnosis"))
+    when(col("icd10_primary_desc").isNull(), col("icd10_master_desc"))
     .otherwise(col("icd10_primary_desc"))
-)
+).drop("icd10_master_code", "icd10_master_desc")
 
 # ================================================================
-# 4. AGGREGATE PROCEDURES, DRUGS, VITAMINS
+# 5. AGGREGATE PROCEDURES, DRUGS, VITAMINS
 # ================================================================
-print("\n[4/12] Aggregating medical items...")
+print("\n[5/13] Aggregating medical items...")
 proc_agg = proc.groupBy("claim_id").agg(
     collect_list("icd9_code").alias("procedures_icd9_codes"),
     collect_list("icd9_description").alias("procedures_icd9_descs"),
@@ -93,11 +135,10 @@ vit_agg = vit.groupBy("claim_id").agg(
     collect_list("cost").alias("vitamin_costs")
 )
 
-
 # ================================================================
-# 5. JOIN ALL DATA + DEDUPLICATION
+# 6. JOIN ALL DATA
 # ================================================================
-print("\n[5/12] Joining all tables...")
+print("\n[6/13] Joining all tables...")
 base = (
     hdr.join(diag_primary, "claim_id", "left")
        .join(proc_agg, "claim_id", "left")
@@ -105,26 +146,12 @@ base = (
        .join(vit_agg, "claim_id", "left")
 )
 
-# CRITICAL: Remove duplicates by keeping first occurrence per claim_id
-print("  Removing duplicate claims...")
-from pyspark.sql.window import Window
-from pyspark.sql.functions import row_number
-
-window_spec = Window.partitionBy("claim_id").orderBy("visit_date")
-base = base.withColumn("row_num", row_number().over(window_spec)) \
-           .filter(col("row_num") == 1) \
-           .drop("row_num")
-
-print("✓ Duplicates removed")
-
-
 # ================================================================
-# 5.5. DATA QUALITY FIXES
+# 6.5. DATA QUALITY FIXES
 # ================================================================
-print("\n[5.5/12] Applying data quality fixes...")
+print("\n[6.5/13] Applying data quality fixes...")
 
 # 1. Remove duplicates
-from pyspark.sql.window import Window
 from pyspark.sql.functions import row_number
 
 window_spec = Window.partitionBy("claim_id").orderBy("visit_date")
@@ -135,22 +162,43 @@ base = base.withColumn("row_num", row_number().over(window_spec)) \
 claims_after_dedup = base.count()
 print(f"  After deduplication: {claims_after_dedup:,} claims")
 
-# 2. Filter claims without diagnosis
-claims_before_filter = base.count()
-base = base.filter(col("icd10_primary_code").isNotNull())
-claims_after_filter = base.count()
-removed = claims_before_filter - claims_after_filter
+# 2. Fill missing diagnosis with "UNKNOWN"
+print("  Filling missing diagnosis...")
+base = base.withColumn(
+    "icd10_primary_code",
+    when(col("icd10_primary_code").isNull(), lit("UNKNOWN"))
+    .otherwise(col("icd10_primary_code"))
+).withColumn(
+    "icd10_primary_desc",
+    when(col("icd10_primary_desc").isNull(), lit("Unknown diagnosis"))
+    .otherwise(col("icd10_primary_desc"))
+)
 
-print(f"  Removed {removed:,} claims without diagnosis ({removed/claims_before_filter*100:.1f}%)")
-print(f"  Remaining: {claims_after_filter:,} valid claims")
+# 3. Ensure all arrays are not null
+print("  Fixing null arrays...")
+base = base.withColumn(
+    "procedures_icd9_codes",
+    coalesce(col("procedures_icd9_codes"), array())
+).withColumn(
+    "procedures_icd9_descs",
+    coalesce(col("procedures_icd9_descs"), array())
+).withColumn(
+    "drug_codes",
+    coalesce(col("drug_codes"), array())
+).withColumn(
+    "drug_names",
+    coalesce(col("drug_names"), array())
+).withColumn(
+    "vitamin_names",
+    coalesce(col("vitamin_names"), array())
+)
 
 print("✓ Data quality fixes applied")
 
-
 # ================================================================
-# 6. BASIC FEATURES (DATE, AGE, FLAGS)
+# 7. BASIC FEATURES (DATE, AGE, FLAGS)
 # ================================================================
-print("\n[6/12] Creating basic features...")
+print("\n[7/13] Creating basic features...")
 base = (
     base.withColumn("patient_age",
         when(col("patient_dob").isNull(), None)
@@ -165,93 +213,71 @@ base = (
 )
 
 # ================================================================
-# 7. CLINICAL COMPATIBILITY CHECKING (CRITICAL FEATURE!)
+# 8. CLINICAL COMPATIBILITY CHECKING (USING REF TABLES!)
 # ================================================================
-print("\n[7/12] Checking clinical compatibility (CRITICAL FEATURE)...")
+print("\n[8/13] Checking clinical compatibility using reference tables...")
 
-# Broadcast COMPAT_RULES for efficient UDF execution
-compat_broadcast = spark.sparkContext.broadcast(COMPAT_RULES)
+# Join with procedure rules
+base_with_proc_rules = base.join(
+    ref_proc_allowed,
+    base.icd10_primary_code == ref_proc_allowed.icd10_code,
+    "left"
+)
 
-# FIX: Use spark_udf instead of udf
-@spark_udf(returnType=DoubleType())
-def compute_procedure_compatibility(icd10, procedures):
-    """
-    Check if procedures are clinically compatible with diagnosis.
-    Returns: 0.0 (no match) to 1.0 (perfect match)
-    """
-    if not icd10 or not procedures:
-        return 0.0
-    
-    rules = compat_broadcast.value.get(icd10)
-    if not rules:
-        return 0.5  # Unknown diagnosis - neutral score
-    
-    allowed_procedures = rules.get("procedures", [])
-    if not allowed_procedures:
-        return 0.5
-    
-    # Calculate match ratio
-    matches = sum(1 for p in procedures if p in allowed_procedures)
-    return float(matches) / len(procedures)
-
-@spark_udf(returnType=DoubleType())
-def compute_drug_compatibility(icd10, drugs):
-    """Check if drugs are clinically appropriate for diagnosis"""
-    if not icd10 or not drugs:
-        return 0.0
-    
-    rules = compat_broadcast.value.get(icd10)
-    if not rules:
-        return 0.5
-    
-    allowed_drugs = rules.get("drugs", [])
-    if not allowed_drugs:
-        return 0.5
-    
-    matches = sum(1 for d in drugs if d in allowed_drugs)
-    return float(matches) / len(drugs)
-
-@spark_udf(returnType=DoubleType())
-def compute_vitamin_compatibility(icd10, vitamins):
-    """Check if vitamins are appropriate for diagnosis"""
-    if not icd10 or not vitamins:
-        return 0.0
-    
-    rules = compat_broadcast.value.get(icd10)
-    if not rules:
-        return 0.5
-    
-    allowed_vitamins = rules.get("vitamins", [])
-    if not allowed_vitamins:
-        return 0.5
-    
-    matches = sum(1 for v in vitamins if v in allowed_vitamins)
-    return float(matches) / len(vitamins)
-
-# Apply compatibility checks
-base = base.withColumn(
+# Calculate procedure compatibility score
+base_with_proc_rules = base_with_proc_rules.withColumn(
     "diagnosis_procedure_score",
-    compute_procedure_compatibility(col("icd10_primary_code"), col("procedures_icd9_codes"))
+    when(col("allowed_procedures").isNull(), lit(0.5))  # Unknown diagnosis
+    .when(size("procedures_icd9_codes") == 0, lit(0.0))  # No procedures
+    .otherwise(
+        size(array_intersect(col("procedures_icd9_codes"), col("allowed_procedures"))) / 
+        size("procedures_icd9_codes")
+    )
+).drop("icd10_code", "allowed_procedures")
+
+# Join with drug rules
+base_with_drug_rules = base_with_proc_rules.join(
+    ref_drug_allowed,
+    base_with_proc_rules.icd10_primary_code == ref_drug_allowed.icd10_code,
+    "left"
 )
 
-base = base.withColumn(
+# Calculate drug compatibility score
+base_with_drug_rules = base_with_drug_rules.withColumn(
     "diagnosis_drug_score",
-    compute_drug_compatibility(col("icd10_primary_code"), col("drug_codes"))
+    when(col("allowed_drugs").isNull(), lit(0.5))  # Unknown diagnosis
+    .when(size("drug_codes") == 0, lit(0.0))  # No drugs
+    .otherwise(
+        size(array_intersect(col("drug_codes"), col("allowed_drugs"))) / 
+        size("drug_codes")
+    )
+).drop("icd10_code", "allowed_drugs")
+
+# Join with vitamin rules
+base_with_vit_rules = base_with_drug_rules.join(
+    ref_vit_allowed,
+    base_with_drug_rules.icd10_primary_code == ref_vit_allowed.icd10_code,
+    "left"
 )
 
-base = base.withColumn(
+# Calculate vitamin compatibility score
+base = base_with_vit_rules.withColumn(
     "diagnosis_vitamin_score",
-    compute_vitamin_compatibility(col("icd10_primary_code"), col("vitamin_names"))
-)
+    when(col("allowed_vitamins").isNull(), lit(0.5))  # Unknown diagnosis
+    .when(size("vitamin_names") == 0, lit(0.0))  # No vitamins
+    .otherwise(
+        size(array_intersect(col("vitamin_names"), col("allowed_vitamins"))) / 
+        size("vitamin_names")
+    )
+).drop("icd10_code", "allowed_vitamins")
 
-print("✓ Clinical compatibility scores computed")
+print("✓ Clinical compatibility scores computed from reference tables")
 
 # ================================================================
-# 8. MISMATCH FLAGS (BINARY FRAUD INDICATORS)
+# 9. MISMATCH FLAGS
 # ================================================================
-print("\n[8/12] Creating mismatch flags...")
+print("\n[9/13] Creating mismatch flags...")
 
-# A score < 0.5 indicates incompatibility (potential fraud)
 base = base.withColumn(
     "procedure_mismatch_flag",
     when(col("diagnosis_procedure_score") < 0.5, 1).otherwise(0)
@@ -277,11 +303,10 @@ base = base.withColumn(
 print("✓ Mismatch flags created")
 
 # ================================================================
-# 9. COST ANOMALY DETECTION (STATISTICAL)
+# 10. COST ANOMALY DETECTION
 # ================================================================
-print("\n[9/12] Detecting cost anomalies...")
+print("\n[10/13] Detecting cost anomalies...")
 
-# Calculate statistical z-score per diagnosis
 diagnosis_window = Window.partitionBy("icd10_primary_code")
 
 base = base.withColumn(
@@ -296,30 +321,27 @@ base = base.withColumn(
     when(col("diagnosis_stddev_cost") == 0, 1).otherwise(col("diagnosis_stddev_cost"))
 ).withColumn(
     "biaya_anomaly_score",
-    when(col("cost_zscore") > 3, 4)      # Extreme outlier (>3 SD)
-    .when(col("cost_zscore") > 2, 3)     # High outlier (2-3 SD)
-    .when(col("cost_zscore") > 1, 2)     # Moderate (1-2 SD)
-    .otherwise(1)                         # Normal (<1 SD)
+    when(col("cost_zscore") > 3, 4)
+    .when(col("cost_zscore") > 2, 3)
+    .when(col("cost_zscore") > 1, 2)
+    .otherwise(1)
 )
 
-# Drop intermediate columns
 base = base.drop("diagnosis_avg_cost", "diagnosis_stddev_cost", "cost_zscore")
 
 print("✓ Cost anomaly scores computed")
 
 # ================================================================
-# 10. PATIENT FREQUENCY RISK
+# 11. PATIENT FREQUENCY RISK
 # ================================================================
-print("\n[10/12] Calculating patient claim frequency...")
+print("\n[11/13] Calculating patient claim frequency...")
 
-# Count claims per patient
 patient_freq = base.groupBy("patient_nik").agg(
     count("claim_id").alias("patient_frequency_risk")
 )
 
 base = base.join(patient_freq, "patient_nik", "left")
 
-# Calculate days between claims (fraud indicator)
 patient_window = Window.partitionBy("patient_nik").orderBy("visit_date")
 
 base = base.withColumn(
@@ -327,39 +349,34 @@ base = base.withColumn(
     datediff(col("visit_date"), lag("visit_date", 1).over(patient_window))
 )
 
-# Flag suspicious frequency (claims too close together)
 base = base.withColumn(
     "suspicious_frequency_flag",
-    when(col("days_since_last_claim") < 7, 1)  # Less than 1 week
-    .otherwise(0)
+    when(col("days_since_last_claim") < 7, 1).otherwise(0)
 )
 
 print("✓ Patient frequency features created")
 
 # ================================================================
-# 11. GROUND TRUTH LABELS (LEARN FROM HISTORY)
+# 12. GROUND TRUTH LABELS
 # ================================================================
-print("\n[11/12] Creating ground truth labels from historical data...")
+print("\n[12/13] Creating ground truth labels from historical data...")
 
-# Human reviewer decision (from claim status)
 base = base.withColumn(
     "human_label",
-    when(col("status") == "declined", 1)    # Declined = Fraud
-    .when(col("status") == "approved", 0)   # Approved = Legitimate
-    .otherwise(None)                         # Pending/Unknown = No label
+    when(col("status") == "declined", 1)
+    .when(col("status") == "approved", 0)
+    .otherwise(None)
 )
 
-# Rule-based fraud flag (for validation)
 base = base.withColumn(
     "rule_violation_flag",
-    when(col("mismatch_count") > 0, 1)              # Clinical mismatch
-    .when(col("biaya_anomaly_score") >= 3, 1)       # Cost anomaly
-    .when(col("patient_frequency_risk") > 15, 1)    # High frequency
-    .when(col("suspicious_frequency_flag") == 1, 1) # Claims too close
+    when(col("mismatch_count") > 0, 1)
+    .when(col("biaya_anomaly_score") >= 3, 1)
+    .when(col("patient_frequency_risk") > 15, 1)
+    .when(col("suspicious_frequency_flag") == 1, 1)
     .otherwise(0)
 )
 
-# Final label: Prioritize human decision, fallback to rules
 base = base.withColumn(
     "final_label",
     when(col("human_label").isNotNull(), col("human_label"))
@@ -369,13 +386,12 @@ base = base.withColumn(
 print("✓ Ground truth labels created")
 
 # ================================================================
-# 12. SELECT FINAL FEATURES WITH EXPLICIT CASTING
+# 13. SELECT FINAL FEATURES WITH EXPLICIT CASTING
 # ================================================================
-print("\n[12/12] Selecting final feature set with data type casting...")
+print("\n[13/13] Selecting final feature set with data type casting...")
 
 base = base.withColumn("created_at", current_timestamp())
 
-# Cast all columns explicitly to avoid Iceberg data type errors
 feature_df = base.select(
     col("claim_id").cast("bigint"),
     col("patient_nik").cast("string"),
@@ -392,7 +408,7 @@ feature_df = base.select(
     col("department").cast("string"),
     col("icd10_primary_code").cast("string"),
     col("icd10_primary_desc").cast("string"),
-    col("procedures_icd9_codes"),  # Arrays don't need casting
+    col("procedures_icd9_codes"),
     col("procedures_icd9_descs"),
     col("drug_codes"),
     col("drug_names"),
@@ -422,13 +438,11 @@ feature_df = base.select(
 
 print("✓ Data types cast successfully")
 
-# Save to Iceberg with overwrite mode and schema enforcement
+# Save to Iceberg
 print("\nSaving to Iceberg curated table...")
 
-# Drop table if exists to avoid schema conflicts
 spark.sql("DROP TABLE IF EXISTS iceberg_curated.claim_feature_set")
 
-# Write with explicit schema
 feature_df.write.format("iceberg") \
     .partitionBy("visit_year", "visit_month") \
     .mode("overwrite") \
@@ -439,16 +453,14 @@ feature_df.write.format("iceberg") \
 print("✓ Feature set saved to: iceberg_curated.claim_feature_set")
 
 # ================================================================
-# 13. DATA QUALITY REPORT
+# 14. DATA QUALITY REPORT
 # ================================================================
 print("\n" + "=" * 80)
 print("ETL COMPLETE - DATA QUALITY REPORT")
 print("=" * 80)
 
-# Cache untuk efisiensi
 feature_df.cache()
 
-# Overall statistics
 total_processed = feature_df.count()
 fraud_count = feature_df.filter(col("final_label") == 1).count()
 non_fraud_count = total_processed - fraud_count
@@ -458,23 +470,50 @@ print(f"  Total claims processed: {total_processed:,}")
 print(f"  Fraud claims: {fraud_count:,} ({fraud_count/total_processed*100:.1f}%)")
 print(f"  Legitimate claims: {non_fraud_count:,} ({non_fraud_count/total_processed*100:.1f}%)")
 
-# Label source breakdown - FIXED
 print(f"\n📋 Label Source Distribution:")
 human_labeled = feature_df.filter(col("human_label").isNotNull()).count()
-rule_labeled = total_processed - human_labeled  # FIX: Calculate correctly
+rule_labeled = total_processed - human_labeled
 
 print(f"  Human reviewed: {human_labeled:,} ({human_labeled/total_processed*100:.1f}%)")
 print(f"  Rule-based only: {rule_labeled:,} ({rule_labeled/total_processed*100:.1f}%)")
 
-# Breakdown by status
-print(f"\n📝 Breakdown by Review Status:")
-status_dist = feature_df.groupBy("status").count().collect()
-for row in status_dist:
+print(f"\n🚨 Clinical Mismatch Distribution:")
+mismatch_dist = feature_df.groupBy("mismatch_count").count().orderBy("mismatch_count").collect()
+for row in mismatch_dist:
     pct = row['count'] / total_processed * 100
-    print(f"  {row['status']}: {row['count']:,} ({pct:.1f}%)")
+    print(f"  {row['mismatch_count']} mismatches: {row['count']:,} ({pct:.1f}%)")
+
+print(f"\n💰 Cost Anomaly Distribution:")
+anomaly_dist = feature_df.groupBy("biaya_anomaly_score").count().orderBy("biaya_anomaly_score").collect()
+for row in anomaly_dist:
+    pct = row['count'] / total_processed * 100
+    severity = ["", "Normal", "Moderate", "High", "Extreme"][int(row['biaya_anomaly_score'])]
+    print(f"  Level {row['biaya_anomaly_score']} ({severity}): {row['count']:,} ({pct:.1f}%)")
+
+print(f"\n🏥 Top 10 Diagnoses:")
+top_dx = feature_df.groupBy("icd10_primary_code", "icd10_primary_desc") \
+                   .count() \
+                   .orderBy(col("count").desc()) \
+                   .limit(10) \
+                   .collect()
+for row in top_dx:
+    print(f"  {row['icd10_primary_code']}: {row['icd10_primary_desc']} - {row['count']:,} claims")
+
+print(f"\n🏢 Fraud Rate by Department:")
+dept_fraud = feature_df.groupBy("department") \
+                       .agg(
+                           count("*").alias("total"),
+                           spark_sum(col("final_label")).alias("fraud")
+                       ) \
+                       .withColumn("fraud_rate", col("fraud") / col("total") * 100) \
+                       .orderBy(col("fraud_rate").desc()) \
+                       .collect()
+for row in dept_fraud:
+    print(f"  {row['department']}: {row['fraud_rate']:.1f}% ({row['fraud']}/{row['total']})")
 
 print("\n" + "=" * 80)
 print("✓ Feature engineering complete - Ready for model training")
+print("✓ Clinical rules loaded from Iceberg reference tables")
 print("=" * 80)
 
 spark.stop()
