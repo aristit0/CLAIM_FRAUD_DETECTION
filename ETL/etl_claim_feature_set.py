@@ -15,11 +15,11 @@ spark = (
 
 print("=== LOAD RAW DATA ===")
 
-hdr  = spark.read.format("iceberg").load("iceberg_raw.claim_header")
-dx   = spark.read.format("iceberg").load("iceberg_raw.claim_diagnosis")
-proc = spark.read.format("iceberg").load("iceberg_raw.claim_procedure")
-drug = spark.read.format("iceberg").load("iceberg_raw.claim_drug")
-vit  = spark.read.format("iceberg").load("iceberg_raw.claim_vitamin")
+hdr  = spark.read.format("iceberg").load("iceberg_raw.claim_header_raw")
+dx   = spark.read.format("iceberg").load("iceberg_raw.claim_diagnosis_raw")
+proc = spark.read.format("iceberg").load("iceberg_raw.claim_procedure_raw")
+drug = spark.read.format("iceberg").load("iceberg_raw.claim_drug_raw")
+vit  = spark.read.format("iceberg").load("iceberg_raw.claim_vitamin_raw")
 
 print("=== LOAD REFERENCE TABLES ===")
 ref_icd10 = spark.read.format("iceberg").load("iceberg_ref.master_icd10")
