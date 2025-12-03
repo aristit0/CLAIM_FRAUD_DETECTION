@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-BPJS Fraud Detection Model - Production Deployment
+OPERASIONAL Fraud Detection Model - Production Deployment
 Integrated with Iceberg reference tables for clinical rules
 Provides fraud scoring with detailed clinical compatibility checking
 """
@@ -33,7 +33,7 @@ PREPROCESS_FILE = "preprocess.pkl"
 META_FILE = "meta.json"
 
 print("=" * 80)
-print("BPJS FRAUD DETECTION MODEL - LOADING")
+print("OPERASIONAL FRAUD DETECTION MODEL - LOADING")
 print("Iceberg Integration Version")
 print("=" * 80)
 
@@ -298,7 +298,7 @@ def get_compatibility_details(icd10: str, procedures: List[str],
         procedure_details.append({
             "code": proc,
             "compatible": is_compatible,
-            "status": "✓ Sesuai standar BPJS" if is_compatible else "✗ Perlu verifikasi medis"
+            "status": "✓ Sesuai standar OPERASIONAL" if is_compatible else "✗ Perlu verifikasi medis"
         })
     
     # Check each drug
@@ -308,7 +308,7 @@ def get_compatibility_details(icd10: str, procedures: List[str],
         drug_details.append({
             "code": drug,
             "compatible": is_compatible,
-            "status": "✓ Sesuai standar BPJS" if is_compatible else "✗ Perlu review resep"
+            "status": "✓ Sesuai standar OPERASIONAL" if is_compatible else "✗ Perlu review resep"
         })
     
     # Check each vitamin
@@ -318,7 +318,7 @@ def get_compatibility_details(icd10: str, procedures: List[str],
         vitamin_details.append({
             "name": vit,
             "compatible": is_compatible,
-            "status": "✓ Sesuai standar BPJS" if is_compatible else "✗ Perlu justifikasi medis"
+            "status": "✓ Sesuai standar OPERASIONAL" if is_compatible else "✗ Perlu justifikasi medis"
         })
     
     return {
@@ -346,7 +346,7 @@ def calculate_claim_fraud_score(features: Dict[str, float]) -> float:
 
 def get_cost_assessment(total_claim: float) -> Dict[str, Any]:
     """
-    Assess claim cost against BPJS thresholds.
+    Assess claim cost against OPERASIONAL thresholds.
     """
     thresholds = COST_THRESHOLDS["total_claim"]
     
@@ -364,7 +364,7 @@ def get_cost_assessment(total_claim: float) -> Dict[str, Any]:
         color = "🟢"
     else:
         level = "low"
-        assessment = "Rendah - Standar BPJS"
+        assessment = "Rendah - Standar OPERASIONAL"
         color = "🟢"
     
     return {
@@ -518,7 +518,7 @@ def build_feature_df(records: List[Dict[str, Any]]) -> tuple:
 def generate_explanation(row: Dict[str, Any], fraud_score: float, 
                         icd10: str, compatibility_details: Dict) -> str:
     """
-    Generate human-readable explanation for BPJS reviewers.
+    Generate human-readable explanation for OPERASIONAL reviewers.
     """
     reasons = []
     
@@ -650,7 +650,7 @@ def get_recommendation(fraud_score: float, mismatch_count: int,
     elif fraud_score > 0.5:
         recommendations.append("🔍 MANUAL REVIEW mendalam diperlukan")
         recommendations.append("Verifikasi justifikasi medis untuk item tidak sesuai")
-        recommendations.append("Konfirmasi biaya dengan standar BPJS")
+        recommendations.append("Konfirmasi biaya dengan standar OPERASIONAL")
     
     elif mismatch_count > 0:
         recommendations.append("📋 Verifikasi ketidaksesuaian klinis")
@@ -658,11 +658,11 @@ def get_recommendation(fraud_score: float, mismatch_count: int,
     
     elif cost_anomaly >= 3:
         recommendations.append("💰 Verifikasi justifikasi biaya tinggi")
-        recommendations.append("Bandingkan dengan tarif BPJS standar")
+        recommendations.append("Bandingkan dengan tarif OPERASIONAL standar")
     
     else:
         recommendations.append("✅ APPROVE jika dokumen lengkap")
-        recommendations.append("Pastikan semua item sesuai standar BPJS")
+        recommendations.append("Pastikan semua item sesuai standar OPERASIONAL")
     
     # Add cost-specific recommendation
     cost_assessment = get_cost_assessment(total_claim)
@@ -726,7 +726,7 @@ def validate_input(data: Dict[str, Any]) -> tuple:
 @models.cml_model
 def predict(data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Main prediction endpoint for BPJS fraud detection.
+    Main prediction endpoint for OPERASIONAL fraud detection.
     
     Input format:
     {
@@ -1073,7 +1073,7 @@ def predict_batch(data: Dict[str, Any]) -> Dict[str, Any]:
 
 if __name__ == "__main__":
     print("\n" + "=" * 80)
-    print("BPJS FRAUD DETECTION MODEL - INFERENCE API READY")
+    print("OPERASIONAL FRAUD DETECTION MODEL - INFERENCE API READY")
     print("Iceberg Integrated Version")
     print("=" * 80)
     print("\nAvailable endpoints:")
@@ -1088,7 +1088,7 @@ if __name__ == "__main__":
     print("  ✓ Diagnosis vs Procedure compatibility")
     print("  ✓ Diagnosis vs Drug compatibility")
     print("  ✓ Diagnosis vs Vitamin compatibility")
-    print("  ✓ Cost anomaly detection with BPJS thresholds")
+    print("  ✓ Cost anomaly detection with OPERASIONAL thresholds")
     print("  ✓ Actionable recommendations for reviewers")
     print("  ✓ Manual risk score calculation")
     print(f"  ✓ Iceberg integration: {'✅ Connected' if spark is not None else '⚠ Disconnected'}")
