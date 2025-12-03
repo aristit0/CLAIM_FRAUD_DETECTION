@@ -8,7 +8,6 @@ import json
 import pickle
 import numpy as np
 import pandas as pd
-import xgboost as xgb
 import cml.models_v1 as models
 from datetime import datetime
 from typing import Dict, List, Any
@@ -18,11 +17,9 @@ import os
 # IMPORT CONFIG & GLOBALS
 # ------------------------------------------------------------------
 
-# Config di-import seperti biasa; validasi dilakukan di config.py
 from config import (
     COMPAT_RULES_FALLBACK as COMPAT_RULES,
     FRAUD_PATTERNS,
-    get_fraud_pattern_description,  # currently not used, but kept for future
 )
 
 # Lokasi artefak relatif ke file ini
@@ -33,7 +30,7 @@ PREPROCESS_FILE = os.path.join(MODEL_DIR, "preprocess.pkl")
 META_FILE = os.path.join(MODEL_DIR, "meta.json")
 
 print("=" * 80)
-print("CLAIM FRAUD DETECTION MODEL - LOADING STUB")
+print("CLAIM FRAUD DETECTION MODEL - MODULE IMPORT")
 print("=" * 80)
 
 # Global variables di-init None, nanti di-load lazy
@@ -61,51 +58,73 @@ def _ensure_model_loaded() -> None:
     global best_threshold, feature_importance_map, feature_names
     global GLOBAL_FEATURE_IMPORTANCE, LOAD_ERROR
 
+    # Kalau sudah loaded, tidak usah ulang
     if booster is not None and preprocess is not None and model_meta is not None:
-        return  # already loaded
+        return
 
     try:
+        # Import xgboost di sini, bukan di top-level
+        try:
+            import xgboost as xgb
+        except Exception as e:
+            LOAD_ERROR = f"Failed to import xgboost: {type(e).__name__}: {e}"
+            print(f"[Loader] ✗ {LOAD_ERROR}")
+            return
+
         print("\n[Loader] Loading model artefacts from:", MODEL_DIR)
 
         # Load XGBoost Booster
-        booster = xgb.Booster()
-        booster.load_model(MODEL_JSON)
+        booster_local = xgb.Booster()
+        booster_local.load_model(MODEL_JSON)
         print(f"  ✓ Model loaded: {MODEL_JSON}")
 
         # Load Calibrator
         with open(CALIB_FILE, "rb") as f:
-            calibrator = pickle.load(f)
+            calibrator_local = pickle.load(f)
         print(f"  ✓ Calibrator loaded: {CALIB_FILE}")
 
         # Load Preprocessing metadata
         with open(PREPROCESS_FILE, "rb") as f:
-            preprocess = pickle.load(f)
+            preprocess_local = pickle.load(f)
         print(f"  ✓ Preprocessing config loaded: {PREPROCESS_FILE}")
 
         # Load metadata
         with open(META_FILE, "r") as f:
-            model_meta = json.load(f)
+            model_meta_local = json.load(f)
         print(f"  ✓ Metadata loaded: {META_FILE}")
 
         # Extract preprocessing config
-        numeric_cols = preprocess["numeric_cols"]
-        categorical_cols = preprocess["categorical_cols"]
-        encoders = preprocess["encoders"]
-        best_threshold = preprocess["best_threshold"]
-        feature_importance_map = preprocess["feature_importance"]
+        numeric_cols_local = preprocess_local["numeric_cols"]
+        categorical_cols_local = preprocess_local["categorical_cols"]
+        encoders_local = preprocess_local["encoders"]
+        best_threshold_local = preprocess_local["best_threshold"]
+        feature_importance_map_local = preprocess_local["feature_importance"]
 
-        feature_names = numeric_cols + categorical_cols
+        feature_names_local = numeric_cols_local + categorical_cols_local
 
-        GLOBAL_FEATURE_IMPORTANCE = [
+        global_feature_importance = [
             {"feature": k, "importance": float(v)}
             for k, v in sorted(
-                feature_importance_map.items(),
+                feature_importance_map_local.items(),
                 key=lambda kv: kv[1],
                 reverse=True,
             )
         ]
 
+        # Assign ke global hanya setelah semua sukses
+        booster = booster_local
+        calibrator = calibrator_local
+        preprocess = preprocess_local
+        model_meta = model_meta_local
+        numeric_cols = numeric_cols_local
+        categorical_cols = categorical_cols_local
+        encoders = encoders_local
+        best_threshold = best_threshold_local
+        feature_importance_map = feature_importance_map_local
+        feature_names = feature_names_local
+        GLOBAL_FEATURE_IMPORTANCE[:] = global_feature_importance
         LOAD_ERROR = ""
+
         print("\n[Loader] ✓ Model ready for inference")
         print("=" * 80)
         print(
@@ -115,9 +134,11 @@ def _ensure_model_loaded() -> None:
         print("=" * 80)
 
     except Exception as e:
+        import traceback
+
         LOAD_ERROR = f"{type(e).__name__}: {e}"
         print(f"[Loader] ✗ Error loading artifacts: {LOAD_ERROR}")
-        # Jangan raise, biarkan endpoint yang mengembalikan status error
+        print(traceback.format_exc())
 
 
 # ================================================================
@@ -151,7 +172,6 @@ def compute_compatibility_scores(
     rules = COMPAT_RULES.get(icd10)
 
     if not rules:
-        # Diagnosis tidak ada di rules, skor netral
         return {
             "diagnosis_procedure_score": 0.5,
             "diagnosis_drug_score": 0.5,
@@ -280,7 +300,6 @@ def get_compatibility_details(
 def build_features_from_raw(raw: Dict[str, Any]) -> tuple:
     """
     Transform raw claim data into model features.
-    CRITICAL: HARUS match logic ETL feature engineering.
     """
     claim_id = raw.get("claim_id")
 
@@ -310,8 +329,7 @@ def build_features_from_raw(raw: Dict[str, Any]) -> tuple:
     mismatch = compute_mismatch_flags(compatibility)
     biaya_anomaly = compute_cost_anomaly_score(total_claim, icd10)
 
-    # TODO: nanti bisa ganti dengan frequency dari data historis
-    patient_freq = 2
+    patient_freq = 2  # dummy, nanti bisa ganti
 
     feature_row = {
         # Numeric
@@ -347,6 +365,8 @@ def build_feature_df(records: List[Dict[str, Any]]) -> tuple:
     """
     Bangun DataFrame fitur dan DMatrix XGBoost dari feature rows.
     """
+    from xgboost import DMatrix  # import lokal, setelah dipastikan tersedia
+
     df = pd.DataFrame.from_records(records)
 
     # Pastikan semua kolom ada
@@ -366,7 +386,7 @@ def build_feature_df(records: List[Dict[str, Any]]) -> tuple:
         df[col_name].replace([np.inf, -np.inf], 0, inplace=True)
 
     X = df[numeric_cols + categorical_cols]
-    dmatrix = xgb.DMatrix(X, feature_names=feature_names)
+    dmatrix = DMatrix(X, feature_names=feature_names)
 
     return df, dmatrix
 
@@ -381,9 +401,6 @@ def generate_explanation(
     icd10: str,
     compatibility_details: Dict[str, Any],
 ) -> str:
-    """
-    Penjelasan singkat dan actionable untuk reviewer.
-    """
     reasons: List[str] = []
 
     if row["mismatch_count"] > 0:
@@ -430,9 +447,6 @@ def get_top_risk_factors(
     feature_importance: Dict[str, float],
     top_n: int = 5,
 ) -> List[Dict[str, Any]]:
-    """
-    Ambil faktor risiko utama untuk klaim ini.
-    """
     risk_factors: List[Dict[str, Any]] = []
     top_features = list(feature_importance.items())[: top_n * 3]
 
@@ -491,9 +505,6 @@ def get_recommendation(
     mismatch_count: int,
     cost_anomaly: int,
 ) -> str:
-    """
-    Rekomendasi tindak lanjut untuk reviewer.
-    """
     if fraud_score > 0.8:
         return "RECOMMENDED: Decline atau minta dokumen pendukung tambahan"
     if fraud_score > 0.5:
@@ -510,7 +521,6 @@ def get_recommendation(
 # ================================================================
 
 def validate_input(data: Dict[str, Any]) -> tuple:
-    """Validasi struktur input."""
     errors: List[str] = []
 
     if "raw_records" not in data:
@@ -600,6 +610,7 @@ def predict(data: Dict[str, Any]) -> Dict[str, Any]:
 
         df_features, dmatrix = build_feature_df(processed_records)
 
+        # Booster dan calibrator sudah disiapkan oleh _ensure_model_loaded
         y_raw = booster.predict(dmatrix)
         y_calibrated = calibrator.predict(y_raw)
         y_pred = (y_calibrated >= best_threshold).astype(int)
@@ -770,4 +781,4 @@ def get_model_info(data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-print("\nModel inference API loaded (lazy artifacts). Ready for serving.")
+print("\nModel inference API module imported. Lazy loader will load artifacts on first call.")
