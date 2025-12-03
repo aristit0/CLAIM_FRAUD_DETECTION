@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
-from pyspark.sql import SparkSession, Window
+import cml.data_v1 as cmldata
 from pyspark.sql import functions as F
-from pyspark.sql.types import DoubleType, IntegerType
+from pyspark.sql.window import Window
+from pyspark.sql.types import DoubleType
 
-spark = (
-    SparkSession.builder
-    .appName("ETL_Claim_Feature_Set_v3")
-    .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
-    .config("spark.sql.catalog.iceberg", "org.apache.iceberg.spark.SparkCatalog")
-    .config("spark.sql.catalog.iceberg.type", "hadoop")
-    .config("spark.sql.catalog.iceberg.warehouse", "hdfs:///warehouse/iceberg")
-    .getOrCreate()
-)
+print("=== START ETL v3 — Clinical Rule–Aware Fraud Feature Builder ===")
 
+# -------------------------------------------------------------------
+# CONNECT TO SPARK
+# -------------------------------------------------------------------
+conn = cmldata.get_connection("CDP-MSI")
+spark = conn.get_spark_session()
+
+# ===================================================================
+# LOAD RAW DATA
+# ===================================================================
 print("=== LOAD RAW DATA ===")
 
 hdr  = spark.read.format("iceberg").load("iceberg_raw.claim_header_raw")
@@ -27,12 +29,12 @@ ref_icd9  = spark.read.format("iceberg").load("iceberg_ref.master_icd9")
 ref_drug  = spark.read.format("iceberg").load("iceberg_ref.master_drug")
 ref_vit   = spark.read.format("iceberg").load("iceberg_ref.master_vitamin")
 
-# ensure visit_date is date type
+# convert visit_date to date type
 hdr = hdr.withColumn("visit_date", F.to_date("visit_date"))
 
-# =========================================================================
+# ===================================================================
 # PRIMARY DIAGNOSIS
-# =========================================================================
+# ===================================================================
 w_dx = Window.partitionBy("claim_id").orderBy(F.desc("is_primary"))
 
 primary_dx = (
@@ -46,27 +48,16 @@ primary_dx = (
       .select("claim_id", "primary_dx_code", F.col("description").alias("primary_dx_desc"))
 )
 
-# =========================================================================
-# AGGREGATE PROCEDURE, DRUG, VITAMIN
-# =========================================================================
-proc_agg = (
-    proc.groupBy("claim_id")
-        .agg(F.collect_set("icd9_code").alias("procedures"))
-)
+# ===================================================================
+# PROCEDURE, DRUG, VITAMIN AGG
+# ===================================================================
+proc_agg = proc.groupBy("claim_id").agg(F.collect_set("icd9_code").alias("procedures"))
+drug_agg = drug.groupBy("claim_id").agg(F.collect_set("drug_code").alias("drugs"))
+vit_agg  = vit.groupBy("claim_id").agg(F.collect_set("vitamin_name").alias("vitamins"))
 
-drug_agg = (
-    drug.groupBy("claim_id")
-        .agg(F.collect_set("drug_code").alias("drugs"))
-)
-
-vit_agg = (
-    vit.groupBy("claim_id")
-       .agg(F.collect_set("vitamin_name").alias("vitamins"))
-)
-
-# =========================================================================
-# JOIN INTO BASE DF
-# =========================================================================
+# ===================================================================
+# JOIN BASE
+# ===================================================================
 base = (
     hdr.join(primary_dx, "claim_id", "left")
        .join(proc_agg, "claim_id", "left")
@@ -74,22 +65,22 @@ base = (
        .join(vit_agg,  "claim_id", "left")
 )
 
-# default empty arrays
+# ensure empty arrays instead of null
 base = (
     base.withColumn("procedures", F.coalesce("procedures", F.array().cast("array<string>")))
         .withColumn("drugs",      F.coalesce("drugs",      F.array().cast("array<string>")))
         .withColumn("vitamins",   F.coalesce("vitamins",   F.array().cast("array<string>")))
 )
 
-# =========================================================================
+# ===================================================================
 # COST CLEANUP
-# =========================================================================
+# ===================================================================
 for c in ["total_procedure_cost", "total_drug_cost", "total_vitamin_cost", "total_claim_amount"]:
     base = base.withColumn(c, F.coalesce(F.col(c).cast(DoubleType()), F.lit(0.0)))
 
-# =========================================================================
-# FRAUD LABEL (from status)
-# =========================================================================
+# ===================================================================
+# FRAUD LABEL
+# ===================================================================
 base = base.withColumn(
     "fraud_label",
     F.when(F.col("status") == "declined", 1)
@@ -97,9 +88,9 @@ base = base.withColumn(
      .otherwise(0)
 )
 
-# =========================================================================
-# COST ANOMALY SCORE (per diagnosis)
-# =========================================================================
+# ===================================================================
+# COST ANOMALY SCORE PER DIAGNOSIS
+# ===================================================================
 stats = (
     base.groupBy("primary_dx_code")
         .agg(
@@ -127,13 +118,16 @@ base = (
     )
 )
 
-# =========================================================================
-# FREQUENCY RISK – 60 day rolling window
-# =========================================================================
+# ===================================================================
+# FREQUENCY RISK (60 DAYS ROLLING WINDOW)
+# ===================================================================
+base = base.withColumn("visit_ts", F.col("visit_date").cast("timestamp"))
+base = base.withColumn("visit_long", F.unix_timestamp("visit_ts"))  # numeric
+
 w_freq = (
     Window.partitionBy("patient_nik")
-          .orderBy(F.col("visit_date").cast("timestamp"))
-          .rangeBetween(-60 * 86400, 0)
+          .orderBy("visit_long")
+          .rangeBetween(-60*86400, 0)
 )
 
 base = base.withColumn("claims_60d", F.count("*").over(w_freq))
@@ -148,9 +142,11 @@ base = (
     )
 )
 
-# =========================================================================
-# SAVE TO CURATED V3
-# =========================================================================
+base = base.drop("visit_ts", "visit_long")
+
+# ===================================================================
+# SELECT FINAL COLUMNS
+# ===================================================================
 final_cols = [
     "claim_id",
     "patient_nik",
@@ -181,6 +177,9 @@ final_cols = [
 
 final_df = base.select(*final_cols)
 
+# ===================================================================
+# WRITE OUT TO CURATED V3
+# ===================================================================
 (
     final_df.write
     .format("iceberg")
@@ -188,6 +187,5 @@ final_df = base.select(*final_cols)
     .save("iceberg_curated.claim_feature_set_v3")
 )
 
-print("=== ETL v3 Completed ===")
-
+print("=== ETL v3 Completed Successfully ===")
 spark.stop()
