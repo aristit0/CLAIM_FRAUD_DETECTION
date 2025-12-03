@@ -2,18 +2,28 @@
 import cml.data_v1 as cmldata
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
-<<<<<<< HEAD
-from pyspark.sql.types import DoubleType
-
-print("=== START ETL v3 — Clinical Rule–Aware Fraud Feature Builder ===")
-=======
 from pyspark.sql.types import DoubleType, IntegerType
 from pyspark.sql import udf
->>>>>>> parent of 7e7b525 (enhance all)
+
 
 # -------------------------------------------------------------------
 # CONNECT TO SPARK
 # -------------------------------------------------------------------
+
+# Import centralized config
+project_root = os.getcwd()
+sys.path.insert(0, os.path.join(os.getcwd(), "ETL"))
+from config import COMPAT_RULES, COST_THRESHOLDS
+
+print("=" * 80)
+print("FRAUD DETECTION ETL - FEATURE ENGINEERING PIPELINE")
+print("=" * 80)
+
+# ================================================================
+# 1. CONNECT TO SPARK
+# ================================================================
+print("\n[1/10] Connecting to Spark...")
+>>>>>>> parent of 7e7b525 (enhance all)
 conn = cmldata.get_connection("CDP-MSI")
 spark = conn.get_spark_session()
 
