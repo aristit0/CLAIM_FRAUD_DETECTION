@@ -12,11 +12,10 @@ from pyspark.sql import functions as F
 from pyspark.sql.functions import (
     col, lit, when, collect_list, first, year, month, dayofmonth,
     current_timestamp, size, array, count, sum as spark_sum, avg, stddev,
-    datediff, lag, max as spark_max
+    datediff, lag, max as spark_max, udf as spark_udf  # FIX: Import udf correctly
 )
 from pyspark.sql.window import Window
-from pyspark.sql.types import DoubleType, IntegerType, StringType
-from pyspark.sql import udf
+from pyspark.sql.types import DoubleType, IntegerType, StringType, ArrayType
 
 # Import centralized config
 base_path = os.path.dirname(os.path.dirname(os.getcwd()))
@@ -112,15 +111,15 @@ base = (
 )
 
 # ================================================================
-# 7. CLINICAL COMPATIBILITY CHECKING
-# This is the CORE FEATURE for fraud detection
+# 7. CLINICAL COMPATIBILITY CHECKING (CRITICAL FEATURE!)
 # ================================================================
 print("\n[7/12] Checking clinical compatibility (CRITICAL FEATURE)...")
 
 # Broadcast COMPAT_RULES for efficient UDF execution
 compat_broadcast = spark.sparkContext.broadcast(COMPAT_RULES)
 
-@udf(returnType=DoubleType())
+# FIX: Use spark_udf instead of udf
+@spark_udf(returnType=DoubleType())
 def compute_procedure_compatibility(icd10, procedures):
     """
     Check if procedures are clinically compatible with diagnosis.
@@ -141,7 +140,7 @@ def compute_procedure_compatibility(icd10, procedures):
     matches = sum(1 for p in procedures if p in allowed_procedures)
     return float(matches) / len(procedures)
 
-@udf(returnType=DoubleType())
+@spark_udf(returnType=DoubleType())
 def compute_drug_compatibility(icd10, drugs):
     """Check if drugs are clinically appropriate for diagnosis"""
     if not icd10 or not drugs:
@@ -158,7 +157,7 @@ def compute_drug_compatibility(icd10, drugs):
     matches = sum(1 for d in drugs if d in allowed_drugs)
     return float(matches) / len(drugs)
 
-@udf(returnType=DoubleType())
+@spark_udf(returnType=DoubleType())
 def compute_vitamin_compatibility(icd10, vitamins):
     """Check if vitamins are appropriate for diagnosis"""
     if not icd10 or not vitamins:
@@ -316,7 +315,7 @@ base = base.withColumn(
 print("✓ Ground truth labels created")
 
 # ================================================================
-# 12. SELECT FINAL FEATURES
+# 12. SELECT FINAL FEATURES & SAVE
 # ================================================================
 print("\n[12/12] Selecting final feature set...")
 
@@ -386,9 +385,7 @@ final_columns = [
 
 feature_df = base.select(*final_columns)
 
-# ================================================================
-# 13. SAVE TO ICEBERG (PARTITIONED FOR PERFORMANCE)
-# ================================================================
+# Save to Iceberg
 print("\nSaving to Iceberg curated table...")
 
 feature_df.write.format("iceberg") \
@@ -399,7 +396,7 @@ feature_df.write.format("iceberg") \
 print("✓ Feature set saved to: iceberg_curated.claim_feature_set")
 
 # ================================================================
-# 14. DATA QUALITY REPORT
+# 13. DATA QUALITY REPORT
 # ================================================================
 print("\n" + "=" * 80)
 print("ETL COMPLETE - DATA QUALITY REPORT")
@@ -416,10 +413,9 @@ print(f"  Fraud claims: {fraud_count:,} ({fraud_count/total_processed*100:.1f}%)
 print(f"  Legitimate claims: {non_fraud_count:,} ({non_fraud_count/total_processed*100:.1f}%)")
 
 # Label source breakdown
-label_breakdown = feature_df.groupBy("human_label", "rule_violation_flag").count().collect()
-print(f"\n📋 Label Source Distribution:")
 human_labeled = feature_df.filter(col("human_label").isNotNull()).count()
 rule_labeled = feature_df.filter(col("human_label").isNull()).count()
+print(f"\n📋 Label Source Distribution:")
 print(f"  Human reviewed: {human_labeled:,} ({human_labeled/total_processed*100:.1f}%)")
 print(f"  Rule-based: {rule_labeled:,} ({rule_labeled/total_processed*100:.1f}%)")
 
@@ -435,7 +431,7 @@ print(f"\n💰 Cost Anomaly Distribution:")
 anomaly_dist = feature_df.groupBy("biaya_anomaly_score").count().orderBy("biaya_anomaly_score").collect()
 for row in anomaly_dist:
     pct = row['count'] / total_processed * 100
-    severity = ["Normal", "Normal", "Moderate", "High", "Extreme"][row['biaya_anomaly_score'] - 1]
+    severity = ["", "Normal", "Moderate", "High", "Extreme"][int(row['biaya_anomaly_score'])]
     print(f"  Level {row['biaya_anomaly_score']} ({severity}): {row['count']:,} ({pct:.1f}%)")
 
 # Top diagnoses

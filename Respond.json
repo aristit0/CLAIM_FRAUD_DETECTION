@@ -1,0 +1,26 @@
+{
+  "status": "success",
+  "results": [{
+    "claim_id": "CLM123",
+    "fraud_score": 0.15,
+    "fraud_probability": "15.0%",
+    "risk_level": "MINIMAL RISK",
+    "explanation": "🟢 RISIKO MINIMAL: Tidak ada indikator fraud yang terdeteksi",
+    "recommendation": "RECOMMENDED: Approve jika dokumen lengkap",
+    "clinical_compatibility": {
+      "procedure_compatible": true,
+      "drug_compatible": true,
+      "vitamin_compatible": true,
+      "overall_compatible": true,
+      "details": {
+        "diagnosis_description": "Common cold - symptomatic treatment only",
+        "procedure_details": [{"code": "89.02", "status": "✓ Compatible"}],
+        "drug_details": [
+          {"code": "KFA001", "status": "✓ Compatible"},
+          {"code": "KFA002", "status": "✓ Compatible"}
+        ],
+        "vitamin_details": [{"name": "Vitamin C 500 mg", "status": "✓ Compatible"}]
+      }
+    }
+  }]
+}
