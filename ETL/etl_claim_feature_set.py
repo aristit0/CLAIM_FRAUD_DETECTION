@@ -24,9 +24,9 @@ vit  = spark.sql("SELECT * FROM iceberg_raw.claim_vitamin_raw")
 # -------------------------------------------------------------------
 # LOAD CLINICAL RULES (CDC FROM MYSQL MASTER)
 # -------------------------------------------------------------------
-dx_proc = spark.sql("SELECT * FROM iceberg_raw.clinical_rule_dx_procedure_raw")
-dx_drug = spark.sql("SELECT * FROM iceberg_raw.clinical_rule_dx_drug_raw")
-dx_vit  = spark.sql("SELECT * FROM iceberg_raw.clinical_rule_dx_vitamin_raw")
+dx_proc = spark.sql("SELECT * FROM iceberg_ref.clinical_rule_dx_procedure")
+dx_drug = spark.sql("SELECT * FROM iceberg_ref.clinical_rule_dx_drug")
+dx_vit  = spark.sql("SELECT * FROM iceberg_ref.clinical_rule_dx_vitamin")
 
 # -------------------------------------------------------------------
 # PRIMARY DIAGNOSIS
