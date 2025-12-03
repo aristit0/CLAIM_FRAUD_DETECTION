@@ -182,10 +182,12 @@ final_df = base.select(*final_cols)
 # ===================================================================
 (
     final_df.write
-    .format("iceberg")
-    .mode("overwrite")
-    .save("iceberg_curated.claim_feature_set_v3")
+        .format("iceberg")
+        .mode("overwrite")
+        .saveAsTable("iceberg_curated.claim_feature_set_v3")
 )
+
+
 
 print("=== ETL v3 Completed Successfully ===")
 spark.stop()
