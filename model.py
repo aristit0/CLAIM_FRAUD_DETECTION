@@ -118,7 +118,9 @@ COMPAT_RULES = {
 # ==============================================================================
 # 2. LOAD ARTIFACTS
 # ==============================================================================
-ARTIFACT_PATH = "fraud_model_history_v1.pkl"
+# Use absolute path relative to the script location to ensure it works in CML deployment
+script_dir = os.path.dirname(os.path.abspath(__file__))
+ARTIFACT_PATH = os.path.join(script_dir, "fraud_model_history_v1.pkl")
 artifacts = {}
 
 print(f"Loading model artifacts from {ARTIFACT_PATH}...")
