@@ -19,6 +19,7 @@ from sklearn.metrics import (
 
 import mlflow
 import mlflow.sklearn
+import joblib
 
 
 print("=== START TRAINING — Fraud Model V3 (Clinical + Cost + Frequency) ===")
@@ -36,13 +37,9 @@ table_name = "iceberg_curated.claim_feature_set_v3"
 print(f"Loading data from {table_name} ...")
 
 df_spark = spark.read.format("iceberg").load(table_name)
+print(f"Loaded {df_spark.count()} rows.")
 
-n_rows = df_spark.count()
-print(f"Loaded {n_rows} rows from curated feature table.")
-
-# Only columns needed for training
 df_spark = df_spark.select(
-    "claim_id",
     "primary_dx_code",
     "procedures",
     "drugs",
@@ -56,14 +53,26 @@ df_spark = df_spark.select(
     "fraud_label"
 )
 
-# Convert to pandas
-print("Converting Spark DataFrame to pandas ...")
+print("Converting Spark DF → pandas ...")
 df = df_spark.toPandas()
-print(f"Pandas shape: {df.shape}")
 
-# Ensure correct dtypes
+# -------------------------------------------------------------------
+# SAFETY CHECK → FIX MISSING LABELS
+# -------------------------------------------------------------------
 df["fraud_label"] = df["fraud_label"].fillna(0).astype(int)
 
+label_counts = df["fraud_label"].value_counts()
+print("\nLabel distribution:")
+print(label_counts)
+
+if len(label_counts) < 2:
+    print("\n❌ ERROR: Dataset hanya punya 1 kelas. Model tidak bisa training.")
+    print("   Solusi: periksa ETL atau generator untuk menghasilkan label 0/1.")
+    raise SystemExit
+
+# -------------------------------------------------------------------
+# FIX NUMERICAL COLUMNS
+# -------------------------------------------------------------------
 num_cols = [
     "total_procedure_cost",
     "total_drug_cost",
@@ -77,141 +86,150 @@ for c in num_cols:
     df[c] = df[c].fillna(0).astype(float)
 
 # -------------------------------------------------------------------
-# HELPER: MULTI-HOT ENCODING UNTUK ARRAY KODE
+# MULTI-HOT ENCODER (SAFE VERSION)
 # -------------------------------------------------------------------
 def build_multi_hot(df, col, prefix):
-    """
-    df[col] berisi list kode (procedures/drugs/vitamins).
-    Hasil: menambah kolom prefix_<code> = 0/1
-    """
     all_codes = sorted({
         code
         for lst in df[col].dropna()
         for code in (lst if isinstance(lst, (list, tuple)) else [])
     })
 
+    if len(all_codes) == 0:
+        print(f"[WARN] No values found in {col}, skipping.")
+        return df, []
+
     feature_cols = []
     for code in all_codes:
-        fname = f"{prefix}_{code}"
-        df[fname] = df[col].apply(
+        colname = f"{prefix}_{code}"
+        df[colname] = df[col].apply(
             lambda xs: int(isinstance(xs, (list, tuple)) and code in xs)
         )
-        feature_cols.append(fname)
+        feature_cols.append(colname)
 
-    print(f"Built {len(feature_cols)} multi-hot features for {col} ({prefix})")
+    print(f"Built {len(feature_cols)} features for {col}")
     return df, feature_cols
 
 
 # -------------------------------------------------------------------
-# FEATURE ENGINEERING: DX + PROC + DRUG + VIT
+# DX ONE-HOT
 # -------------------------------------------------------------------
-
-# 1) One-hot untuk primary_dx_code (5 diagnosis utama)
 dx_dummies = pd.get_dummies(df["primary_dx_code"].fillna("UNKNOWN"), prefix="dx")
-dx_feature_cols = list(dx_dummies.columns)
+dx_cols = list(dx_dummies.columns)
 df = pd.concat([df, dx_dummies], axis=1)
-print(f"DX one-hot features: {dx_feature_cols}")
 
-# 2) Multi-hot untuk procedures, drugs, vitamins
-df, proc_feature_cols = build_multi_hot(df, "procedures", "proc")
-df, drug_feature_cols = build_multi_hot(df, "drugs", "drug")
-df, vit_feature_cols  = build_multi_hot(df, "vitamins", "vit")
 
 # -------------------------------------------------------------------
-# FINAL FEATURE SET
+# MULTI-HOT FOR PROCEDURE/DRUG/VITAMIN
+# -------------------------------------------------------------------
+df, proc_cols = build_multi_hot(df, "procedures", "proc")
+df, drug_cols = build_multi_hot(df, "drugs", "drug")
+df, vit_cols  = build_multi_hot(df, "vitamins", "vit")
+
+
+# -------------------------------------------------------------------
+# FINAL FEATURE LIST
 # -------------------------------------------------------------------
 feature_cols = (
-    num_cols
-    + dx_feature_cols
-    + proc_feature_cols
-    + drug_feature_cols
-    + vit_feature_cols
+    num_cols + dx_cols + proc_cols + drug_cols + vit_cols
 )
 
-print("Feature columns used:")
+print("\n=== FINAL FEATURES USED ===")
 for c in feature_cols:
-    print("  -", c)
+    print(" -", c)
 
 X = df[feature_cols].values
 y = df["fraud_label"].values
 
-print(f"X shape: {X.shape}, y shape: {y.shape}")
 
 # -------------------------------------------------------------------
-# TRAIN / VAL / TEST SPLIT
+# TRAIN/VAL/TEST SPLIT (SAFE STRATIFICATION)
 # -------------------------------------------------------------------
-# First: train+val vs test
-X_trainval, X_test, y_trainval, y_test = train_test_split(
-    X, y, test_size=0.15, random_state=42, stratify=y
-)
+def safe_split(X, y, test_size, random_state):
+    if len(np.unique(y)) < 2:
+        strat = None
+    else:
+        strat = y
+    return train_test_split(X, y, test_size=test_size, random_state=random_state, stratify=strat)
 
-# Split lagi train vs val
-X_train, X_val, y_train, y_val = train_test_split(
-    X_trainval, y_trainval, test_size=0.1765,  # kira-kira 15% total data
-    random_state=42, stratify=y_trainval
-)
 
-print(f"Train size : {X_train.shape[0]}")
-print(f"Val size   : {X_val.shape[0]}")
-print(f"Test size  : {X_test.shape[0]}")
+X_trainval, X_test, y_trainval, y_test = safe_split(X, y, 0.15, 42)
+X_train, X_val, y_train, y_val = safe_split(X_trainval, y_trainval, 0.1765, 42)
+
+print(f"\nTrain size: {len(y_train)}")
+print(f"Val size  : {len(y_val)}")
+print(f"Test size : {len(y_test)}")
+
 
 # -------------------------------------------------------------------
-# TRAIN MODEL (RandomForest, class_weight balanced)
+# TRAIN MODEL (CLASS-WEIGHT BALANCED)
 # -------------------------------------------------------------------
-print("Training model...")
+print("\nTraining RandomForest V3 ...")
 
 rf = RandomForestClassifier(
     n_estimators=300,
     max_depth=None,
     min_samples_split=10,
     min_samples_leaf=5,
-    n_jobs=-1,
     class_weight="balanced",
+    n_jobs=-1,
     random_state=42
 )
 
 rf.fit(X_train, y_train)
 
-# -------------------------------------------------------------------
-# VALIDATION METRICS + THRESHOLD TUNING
-# -------------------------------------------------------------------
-val_proba = rf.predict_proba(X_val)[:, 1]
+# SAFETY FIX — predict_proba
+def get_proba(model, X):
+    proba = model.predict_proba(X)
+    if proba.shape[1] == 1:
+        # Only class 0 → return proba=0 for fraud
+        return np.zeros(len(X))
+    return proba[:, 1]
 
+val_proba = get_proba(rf, X_val)
+
+# -------------------------------------------------------------------
+# VALIDATION METRICS
+# -------------------------------------------------------------------
 val_roc = roc_auc_score(y_val, val_proba)
 val_pr  = average_precision_score(y_val, val_proba)
 
-print(f"Validation ROC AUC     : {val_roc:.4f}")
-print(f"Validation PR AUC (AP) : {val_pr:.4f}")
+print(f"\nValidation ROC AUC  : {val_roc:.4f}")
+print(f"Validation PR AUC   : {val_pr:.4f}")
 
-# Cari threshold terbaik (grid search sederhana)
+# -------------------------------------------------------------------
+# THRESHOLD TUNING
+# -------------------------------------------------------------------
 best_thr = 0.5
-best_f1 = -1.0
+best_f1 = 0
 
 for thr in np.linspace(0.1, 0.9, 17):
-    val_pred = (val_proba >= thr).astype(int)
-    tp = np.sum((val_pred == 1) & (y_val == 1))
-    fp = np.sum((val_pred == 1) & (y_val == 0))
-    fn = np.sum((val_pred == 0) & (y_val == 1))
+    pred = (val_proba >= thr).astype(int)
 
-    precision = tp / (tp + fp + 1e-9)
-    recall    = tp / (tp + fn + 1e-9)
-    f1 = 2 * precision * recall / (precision + recall + 1e-9)
+    tp = np.sum((pred == 1) & (y_val == 1))
+    fp = np.sum((pred == 1) & (y_val == 0))
+    fn = np.sum((pred == 0) & (y_val == 1))
+
+    prec = tp / (tp + fp + 1e-9)
+    rec  = tp / (tp + fn + 1e-9)
+    f1 = 2 * prec * rec / (prec + rec + 1e-9)
 
     if f1 > best_f1:
         best_f1 = f1
         best_thr = thr
 
-print(f"Best threshold (val)   : {best_thr:.4f}")
-print(f"Best F1 at this thr    : {best_f1:.4f}")
+print(f"Best threshold : {best_thr:.4f}")
+print(f"Best F1 score  : {best_f1:.4f}")
 
 # -------------------------------------------------------------------
 # TEST METRICS
 # -------------------------------------------------------------------
-test_proba = rf.predict_proba(X_test)[:, 1]
-test_roc   = roc_auc_score(y_test, test_proba)
-test_pr    = average_precision_score(y_test, test_proba)
+test_proba = get_proba(rf, X_test)
 
-print("\n=== Test metrics (using tuned threshold) ===")
+test_roc = roc_auc_score(y_test, test_proba)
+test_pr  = average_precision_score(y_test, test_proba)
+
+print("\n=== TEST RESULTS ===")
 print(f"ROC AUC : {test_roc:.4f}")
 print(f"PR AUC  : {test_pr:.4f}")
 
@@ -223,61 +241,39 @@ print(classification_report(y_test, test_pred, digits=4))
 print("Confusion Matrix:")
 print(confusion_matrix(y_test, test_pred))
 
+
 # -------------------------------------------------------------------
-# SAVE MODEL + CONFIG LOCALLY
+# SAVE MODEL BUNDLE
 # -------------------------------------------------------------------
 os.makedirs("./model_v3", exist_ok=True)
-model_path = "./model_v3/fraud_model_v3.pkl"
-config_path = "./model_v3/feature_config_v3.json"
-
-# We store model + feature_cols + threshold in one dict
-import joblib
-
-model_bundle = {
-    "model_type": "RandomForestClassifier",
+bundle = {
     "model": rf,
-    "feature_columns": feature_cols,
     "best_threshold": float(best_thr),
+    "feature_columns": feature_cols
 }
+joblib.dump(bundle, "./model_v3/fraud_model_v3.pkl")
 
-joblib.dump(model_bundle, model_path)
-print(f"\nModel saved to: {model_path}")
+print("\nModel saved → ./model_v3/fraud_model_v3.pkl")
 
-config = {
-    "table_source": table_name,
-    "numeric_features": num_cols,
-    "dx_features": dx_feature_cols,
-    "procedure_features": proc_feature_cols,
-    "drug_features": drug_feature_cols,
-    "vitamin_features": vit_feature_cols,
-    "all_features": feature_cols,
-    "best_threshold": float(best_thr),
-}
+with open("./model_v3/feature_config_v3.json", "w") as f:
+    json.dump({
+        "feature_cols": feature_cols,
+        "best_threshold": float(best_thr),
+    }, f, indent=2)
 
-with open(config_path, "w") as f:
-    json.dump(config, f, indent=2)
-
-print(f"Config saved to: {config_path}")
 
 # -------------------------------------------------------------------
-# LOG TO MLFLOW (OPTIONAL, BUT NICE IN CML)
+# MLFLOW LOGGING
 # -------------------------------------------------------------------
-mlflow.set_experiment("fraud_detection_v3")
+mlflow.set_experiment("fraud_detection_v3_fixed")
 
-with mlflow.start_run(run_name="fraud_model_v3_clinical_cost_freq"):
-    mlflow.log_param("model_type", "RandomForestClassifier")
-    mlflow.log_param("n_estimators", rf.n_estimators)
-    mlflow.log_param("class_weight", "balanced")
+with mlflow.start_run(run_name="fraud_model_v3_fixed"):
+    mlflow.log_param("model", "RandomForestClassifier")
     mlflow.log_param("best_threshold", best_thr)
-
-    mlflow.log_metric("val_roc_auc", val_roc)
-    mlflow.log_metric("val_pr_auc", val_pr)
-    mlflow.log_metric("test_roc_auc", test_roc)
-    mlflow.log_metric("test_pr_auc", test_pr)
-    mlflow.log_metric("best_f1_val", best_f1)
-
+    mlflow.log_metric("val_roc", val_roc)
+    mlflow.log_metric("val_pr", val_pr)
+    mlflow.log_metric("test_roc", test_roc)
+    mlflow.log_metric("test_pr", test_pr)
     mlflow.sklearn.log_model(rf, "model")
-    mlflow.log_artifact(config_path, artifact_path="config")
-    mlflow.log_artifact(model_path, artifact_path="model_bundle")
 
-print("\n=== Training V3 completed successfully ===")
+print("\n=== TRAINING COMPLETED (FIXED V3) ===")
