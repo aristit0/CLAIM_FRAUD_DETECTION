@@ -9,7 +9,6 @@ APP_SECRET = "supersecret"
 BACKEND_URL = "http://127.0.0.1:2222/score/"
 
 
-
 # ---------------------------
 # MySQL Connection
 # ---------------------------
@@ -26,17 +25,18 @@ def db():
 
 app = Flask(__name__)
 
-# SECRET KEY (HARUS SATU, TIDAK BOLEH DOUBLE)
+# SECRET KEY
 app.secret_key = "supersecretkey_approval_ui"
 
-# FIX SESSION DROPPING
+# SESSION FIX
 app.config.update(
     PERMANENT_SESSION_LIFETIME=timedelta(hours=1),
     SESSION_COOKIE_NAME="fraud_approval_session",
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SECURE=False  # <- kamu pakai HTTP, jadi FALSE
+    SESSION_COOKIE_SECURE=False
 )
+
 # ----------------------------
 # Custom Filter: Currency IDR
 # ----------------------------
@@ -45,6 +45,29 @@ def rupiah(n):
         return "-"
     return "Rp {:,.2f}".format(float(n)).replace(",", "X").replace(".", ",").replace("X", ".")
 app.jinja_env.filters["rupiah"] = rupiah
+
+
+# ============================================================
+# NORMALIZER UNTUK MODEL OUTPUT
+# ============================================================
+def normalize_model_output(m):
+    """Pastikan UI selalu dapat semua field wajib dari model_output"""
+    if not isinstance(m, dict):
+        m = {}
+
+    return {
+        "fraud_score": m.get("fraud_score", 0),
+        "fraud_probability": m.get("fraud_probability", "0%"),
+        "risk_level": m.get("risk_level", "UNKNOWN"),
+        "clinical_compatibility": m.get("clinical_compatibility", {}),
+        "features": m.get("features", {}),
+        "explanation": m.get("explanation", "-"),
+        "confidence": m.get("confidence", 0),
+        "model_flag": m.get("model_flag", 0),
+        "final_flag": m.get("final_flag", 0),
+        "top_risk_factors": m.get("top_risk_factors", []),
+        "claim_id": m.get("claim_id"),
+    }
 
 
 # ============================================================
@@ -58,15 +81,16 @@ def login():
 
         if user == "aris" and pw == "Admin123":
             session.permanent = True
-            session["user"] = user     # cukup user saja
+            session["user"] = user
             return redirect("/dashboard")
 
         return render_template("login.html", error="Invalid username or password")
 
     return render_template("login.html")
 
+
 # ============================================================
-# DASHBOARD — PAGINATION 20 ROWS
+# DASHBOARD — PAGINATION
 # ============================================================
 @app.route("/dashboard")
 def dashboard():
@@ -82,42 +106,31 @@ def dashboard():
 
     cur.execute("SELECT COUNT(*) AS total FROM claim_header WHERE status='pending'")
     total = cur.fetchone()["total"]
-
     total_pages = math.ceil(total / limit)
 
     cur.execute(f"""
-        SELECT claim_id,
-               patient_name,
-               visit_date,
-               visit_type,
-               department,
-               total_claim_amount,
-               status
+        SELECT claim_id, patient_name, visit_date, visit_type,
+               department, total_claim_amount, status
         FROM claim_header 
         WHERE status='pending'
         ORDER BY claim_id DESC
         LIMIT {limit} OFFSET {offset}
     """)
-
     claims = cur.fetchall()
+
     cur.close()
     conn.close()
 
-    return render_template(
-        "dashboard.html",
-        claims=claims,
-        page=page,
-        total_pages=total_pages
-    )
+    return render_template("dashboard.html", claims=claims,
+                           page=page, total_pages=total_pages)
 
 
 # ============================================================
-# FETCH CLAIM DETAIL (AJAX SEARCH)
+# AJAX: GET CLAIM DETAIL
 # ============================================================
 @app.route("/api/get_claim", methods=["POST"])
 def api_get_claim():
-    data = request.json
-    claim_id = data.get("claim_id")
+    claim_id = request.json.get("claim_id")
 
     conn = db()
     cur = conn.cursor(dictionary=True)
@@ -129,9 +142,8 @@ def api_get_claim():
     if not header:
         return jsonify({"error": "Claim not found"}), 404
 
-    # Fetch scoring
     scoring_raw = requests.get(f"{BACKEND_URL}{claim_id}", verify=False).json()
-    model_output = scoring_raw.get("model_output", {})
+    model_output = normalize_model_output(scoring_raw.get("model_output", {}))
 
     return jsonify({
         "claim_id": claim_id,
@@ -151,31 +163,30 @@ def review(claim_id):
     conn = db()
     cur = conn.cursor(dictionary=True)
 
-    cur.execute("SELECT * FROM claim_header WHERE claim_id = %s", (claim_id,))
+    cur.execute("SELECT * FROM claim_header WHERE claim_id=%s", (claim_id,))
     header = cur.fetchone()
 
-    cur.execute("SELECT * FROM claim_diagnosis WHERE claim_id = %s", (claim_id,))
+    cur.execute("SELECT * FROM claim_diagnosis WHERE claim_id=%s", (claim_id,))
     diagnosis = cur.fetchall()
 
-    cur.execute("SELECT * FROM claim_procedure WHERE claim_id = %s", (claim_id,))
+    cur.execute("SELECT * FROM claim_procedure WHERE claim_id=%s", (claim_id,))
     procedures = cur.fetchall()
 
-    cur.execute("SELECT * FROM claim_drug WHERE claim_id = %s", (claim_id,))
+    cur.execute("SELECT * FROM claim_drug WHERE claim_id=%s", (claim_id,))
     drugs = cur.fetchall()
 
-    cur.execute("SELECT * FROM claim_vitamin WHERE claim_id = %s", (claim_id,))
+    cur.execute("SELECT * FROM claim_vitamin WHERE claim_id=%s", (claim_id,))
     vitamins = cur.fetchall()
 
     cur.close()
     conn.close()
 
-    # Fetch scoring correct model structure
     scoring_raw = requests.get(f"{BACKEND_URL}{claim_id}", verify=False).json()
-
+    model_output = normalize_model_output(scoring_raw.get("model_output", {}))
 
     scoring = {
         "ai_explanation": scoring_raw.get("ai_explanation"),
-        "model_output": scoring_raw.get("model_output", {}),
+        "model_output": model_output
     }
 
     return render_template(
@@ -190,7 +201,7 @@ def review(claim_id):
 
 
 # ============================================================
-# UPDATE STATUS API
+# UPDATE STATUS
 # ============================================================
 @app.route("/api/update_status/<int:claim_id>", methods=["POST"])
 def update_status(claim_id):
@@ -201,7 +212,8 @@ def update_status(claim_id):
 
     conn = db()
     cur = conn.cursor()
-    cur.execute("UPDATE claim_header SET status=%s WHERE claim_id=%s", (new_status, claim_id))
+    cur.execute("UPDATE claim_header SET status=%s WHERE claim_id=%s",
+                (new_status, claim_id))
     conn.commit()
     cur.close()
     conn.close()

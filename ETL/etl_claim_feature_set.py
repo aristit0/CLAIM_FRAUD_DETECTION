@@ -1,68 +1,52 @@
 #!/usr/bin/env python3
-
-import sys
-import os
 import cml.data_v1 as cmldata
 from pyspark.sql import functions as F
-from pyspark.sql.functions import (
-    col, lit, when, collect_list, first, year, month, dayofmonth,
-    current_timestamp, size, array, count, sum as spark_sum, avg, stddev
-)
+from pyspark.sql.functions import *
 from pyspark.sql.window import Window
-from pyspark.sql.types import DoubleType, IntegerType
-from pyspark.sql.functions import udf
 
+print("=== START ETL v3 — Clinical Rule–Aware Fraud Feature Builder ===")
 
-# Import centralized config
-project_root = os.getcwd()
-sys.path.insert(0, os.path.join(os.getcwd(), "ETL"))
-from config import COMPAT_RULES, COST_THRESHOLDS
-
-print("=" * 80)
-print("FRAUD DETECTION ETL - FEATURE ENGINEERING PIPELINE")
-print("=" * 80)
-
-# ================================================================
-# 1. CONNECT TO SPARK
-# ================================================================
-print("\n[1/10] Connecting to Spark...")
+# -------------------------------------------------------------------
+# CONNECT TO SPARK
+# -------------------------------------------------------------------
 conn = cmldata.get_connection("CDP-MSI")
 spark = conn.get_spark_session()
-print(f"✓ Spark Application ID: {spark.sparkContext.applicationId}")
 
-# ================================================================
-# 2. LOAD RAW TABLES
-# ================================================================
-print("\n[2/10] Loading raw tables from Iceberg...")
-hdr = spark.sql("SELECT * FROM iceberg_raw.claim_header_raw")
+# -------------------------------------------------------------------
+# LOAD RAW ICEBERG TABLES (CDC OUTPUT)
+# -------------------------------------------------------------------
+hdr  = spark.sql("SELECT * FROM iceberg_raw.claim_header_raw")
 diag = spark.sql("SELECT * FROM iceberg_raw.claim_diagnosis_raw")
 proc = spark.sql("SELECT * FROM iceberg_raw.claim_procedure_raw")
 drug = spark.sql("SELECT * FROM iceberg_raw.claim_drug_raw")
-vit = spark.sql("SELECT * FROM iceberg_raw.claim_vitamin_raw")
+vit  = spark.sql("SELECT * FROM iceberg_raw.claim_vitamin_raw")
 
-print(f"✓ Loaded {hdr.count():,} claims")
+# -------------------------------------------------------------------
+# LOAD CLINICAL RULES (CDC FROM MYSQL MASTER)
+# -------------------------------------------------------------------
+dx_proc = spark.sql("SELECT * FROM iceberg_raw.clinical_rule_dx_procedure_raw")
+dx_drug = spark.sql("SELECT * FROM iceberg_raw.clinical_rule_dx_drug_raw")
+dx_vit  = spark.sql("SELECT * FROM iceberg_raw.clinical_rule_dx_vitamin_raw")
 
-# ================================================================
-# 3. PRIMARY DIAGNOSIS
-# ================================================================
-print("\n[3/10] Extracting primary diagnosis...")
+# -------------------------------------------------------------------
+# PRIMARY DIAGNOSIS
+# -------------------------------------------------------------------
 diag_primary = (
     diag.where(col("is_primary") == 1)
         .groupBy("claim_id")
         .agg(
-            first("icd10_code").alias("icd10_primary_code"),
-            first("icd10_description").alias("icd10_primary_desc")
+            first("icd10_code").alias("primary_dx"),
+            first("icd10_description").alias("primary_dx_desc")
         )
 )
 
-# ================================================================
-# 4. AGGREGATIONS
-# ================================================================
-print("\n[4/10] Aggregating procedures, drugs, vitamins...")
+# -------------------------------------------------------------------
+# AGGREGATE RAW ARRAYS
+# -------------------------------------------------------------------
 proc_agg = proc.groupBy("claim_id").agg(
-    collect_list("icd9_code").alias("procedures_icd9_codes"),
-    collect_list("icd9_description").alias("procedures_icd9_descs"),
-    collect_list("cost").alias("procedures_costs")
+    collect_list("icd9_code").alias("proc_codes"),
+    collect_list("icd9_description").alias("proc_desc"),
+    collect_list("cost").alias("proc_costs")
 )
 
 drug_agg = drug.groupBy("claim_id").agg(
@@ -76,10 +60,9 @@ vit_agg = vit.groupBy("claim_id").agg(
     collect_list("cost").alias("vitamin_costs")
 )
 
-# ================================================================
-# 5. JOIN ALL DATA
-# ================================================================
-print("\n[5/10] Joining all tables...")
+# -------------------------------------------------------------------
+# JOIN RAW TABLES
+# -------------------------------------------------------------------
 base = (
     hdr.join(diag_primary, "claim_id", "left")
        .join(proc_agg, "claim_id", "left")
@@ -87,291 +70,164 @@ base = (
        .join(vit_agg, "claim_id", "left")
 )
 
-# ================================================================
-# 6. BASIC FEATURES (DATE, AGE, FLAGS)
-# ================================================================
-print("\n[6/10] Creating basic features...")
+# Fill empty arrays
 base = (
-    base.withColumn("patient_age",
-        when(col("patient_dob").isNull(), None)
-        .otherwise(year(col("visit_date")) - year(col("patient_dob")))
+    base.withColumn("proc_codes",   when(col("proc_codes").isNull(), array()).otherwise(col("proc_codes")))
+        .withColumn("drug_codes",   when(col("drug_codes").isNull(), array()).otherwise(col("drug_codes")))
+        .withColumn("vitamin_names",when(col("vitamin_names").isNull(), array()).otherwise(col("vitamin_names")))
+)
+
+# -------------------------------------------------------------------
+# EXPLODE RULES PER CLAIM
+# -------------------------------------------------------------------
+proc_rule = dx_proc.groupBy("icd10_code").agg(
+    collect_list(struct("icd9_code","is_mandatory","severity_level")).alias("rule_procs")
+)
+
+drug_rule = dx_drug.groupBy("icd10_code").agg(
+    collect_list(struct("drug_code","is_mandatory","severity_level")).alias("rule_drugs")
+)
+
+vit_rule = dx_vit.groupBy("icd10_code").agg(
+    collect_list(struct("vitamin_name","is_mandatory","severity_level")).alias("rule_vits")
+)
+
+rules = (
+    proc_rule
+        .join(drug_rule, "icd10_code", "left")
+        .join(vit_rule, "icd10_code", "left")
+)
+
+# -------------------------------------------------------------------
+# JOIN CLAIM + CLINICAL RULES
+# -------------------------------------------------------------------
+df = base.join(rules, base.primary_dx == rules.icd10_code, "left")
+
+# -------------------------------------------------------------------
+# CLINICAL MATCH CHECKING
+# -------------------------------------------------------------------
+
+# mandatory procedures
+df = df.withColumn(
+    "mandatory_proc_missed",
+    F.size(
+        F.filter("rule_procs", lambda r: (r["is_mandatory"] == 1) & (~F.array_contains("proc_codes", r["icd9_code"])))
     )
-    .withColumn("visit_year", year("visit_date"))
-    .withColumn("visit_month", month("visit_date"))
-    .withColumn("visit_day", dayofmonth("visit_date"))
-    .withColumn("has_procedure", when(size("procedures_icd9_codes") > 0, 1).otherwise(0))
-    .withColumn("has_drug", when(size("drug_codes") > 0, 1).otherwise(0))
-    .withColumn("has_vitamin", when(size("vitamin_names") > 0, 1).otherwise(0))
 )
 
-# ================================================================
-# 7. CLINICAL COMPATIBILITY CHECKING (KEY FEATURE!)
-# ================================================================
-print("\n[7/10] Checking clinical compatibility...")
-
-# Create broadcast variable for COMPAT_RULES
-compat_broadcast = spark.sparkContext.broadcast(COMPAT_RULES)
-
-@udf(returnType=DoubleType())
-def compute_procedure_compatibility(icd10, procedures):
-    """Check if procedures are compatible with diagnosis"""
-    if not icd10 or not procedures:
-        return 0.0
-    
-    rules = compat_broadcast.value.get(icd10)
-    if not rules:
-        return 0.5  # Unknown diagnosis
-    
-    allowed_procedures = rules.get("procedures", [])
-    if not allowed_procedures:
-        return 0.5
-    
-    # Calculate match ratio
-    matches = sum(1 for p in procedures if p in allowed_procedures)
-    return float(matches) / len(procedures)
-
-@udf(returnType=DoubleType())
-def compute_drug_compatibility(icd10, drugs):
-    """Check if drugs are compatible with diagnosis"""
-    if not icd10 or not drugs:
-        return 0.0
-    
-    rules = compat_broadcast.value.get(icd10)
-    if not rules:
-        return 0.5
-    
-    allowed_drugs = rules.get("drugs", [])
-    if not allowed_drugs:
-        return 0.5
-    
-    matches = sum(1 for d in drugs if d in allowed_drugs)
-    return float(matches) / len(drugs)
-
-@udf(returnType=DoubleType())
-def compute_vitamin_compatibility(icd10, vitamins):
-    """Check if vitamins are compatible with diagnosis"""
-    if not icd10 or not vitamins:
-        return 0.0
-    
-    rules = compat_broadcast.value.get(icd10)
-    if not rules:
-        return 0.5
-    
-    allowed_vitamins = rules.get("vitamins", [])
-    if not allowed_vitamins:
-        return 0.5
-    
-    matches = sum(1 for v in vitamins if v in allowed_vitamins)
-    return float(matches) / len(vitamins)
-
-# Apply compatibility checks
-base = base.withColumn(
-    "diagnosis_procedure_score",
-    compute_procedure_compatibility(col("icd10_primary_code"), col("procedures_icd9_codes"))
+df = df.withColumn(
+    "mandatory_drug_missed",
+    F.size(
+        F.filter("rule_drugs", lambda r: (r["is_mandatory"] == 1) & (~F.array_contains("drug_codes", r["drug_code"])))
+    )
 )
 
-base = base.withColumn(
-    "diagnosis_drug_score",
-    compute_drug_compatibility(col("icd10_primary_code"), col("drug_codes"))
+df = df.withColumn(
+    "mandatory_vit_missed",
+    F.size(
+        F.filter("rule_vits", lambda r: (r["is_mandatory"] == 1) & (~F.array_contains("vitamin_names", r["vitamin_name"])))
+    )
 )
 
-base = base.withColumn(
-    "diagnosis_vitamin_score",
-    compute_vitamin_compatibility(col("icd10_primary_code"), col("vitamin_names"))
+df = df.withColumn(
+    "mandatory_missed_total",
+    col("mandatory_proc_missed") +
+    col("mandatory_drug_missed") +
+    col("mandatory_vit_missed")
 )
 
-# ================================================================
-# 8. MISMATCH FLAGS (BINARY INDICATORS)
-# ================================================================
-print("\n[8/10] Creating mismatch flags...")
-base = base.withColumn(
-    "procedure_mismatch_flag",
-    when(col("diagnosis_procedure_score") < 0.5, 1).otherwise(0)
-)
+# mismatch flag
+df = df.withColumn("procedure_mismatch_flag", when(col("mandatory_proc_missed") > 0, 1).otherwise(0))
+df = df.withColumn("drug_mismatch_flag",      when(col("mandatory_drug_missed") > 0, 1).otherwise(0))
+df = df.withColumn("vitamin_mismatch_flag",   when(col("mandatory_vit_missed") > 0, 1).otherwise(0))
 
-base = base.withColumn(
-    "drug_mismatch_flag",
-    when(col("diagnosis_drug_score") < 0.5, 1).otherwise(0)
-)
-
-base = base.withColumn(
-    "vitamin_mismatch_flag",
-    when(col("diagnosis_vitamin_score") < 0.5, 1).otherwise(0)
-)
-
-base = base.withColumn(
+df = df.withColumn(
     "mismatch_count",
     col("procedure_mismatch_flag") + col("drug_mismatch_flag") + col("vitamin_mismatch_flag")
 )
 
-# ================================================================
-# 9. COST ANOMALY DETECTION (STATISTICAL)
-# ================================================================
-print("\n[9/10] Detecting cost anomalies...")
-
-# Calculate z-score for costs per diagnosis
-diagnosis_window = Window.partitionBy("icd10_primary_code")
-
-base = base.withColumn(
-    "diagnosis_avg_cost",
-    avg("total_claim_amount").over(diagnosis_window)
-).withColumn(
-    "diagnosis_stddev_cost",
-    stddev("total_claim_amount").over(diagnosis_window)
-).withColumn(
-    "cost_zscore",
-    (col("total_claim_amount") - col("diagnosis_avg_cost")) /
-    when(col("diagnosis_stddev_cost") == 0, 1).otherwise(col("diagnosis_stddev_cost"))
-).withColumn(
-    "biaya_anomaly_score",
-    when(col("cost_zscore") > 3, 4)      # Extreme outlier
-    .when(col("cost_zscore") > 2, 3)     # High outlier
-    .when(col("cost_zscore") > 1, 2)     # Moderate
-    .otherwise(1)                         # Normal
+# -------------------------------------------------------------------
+# COST-BASED FRAUD SIGNAL
+# -------------------------------------------------------------------
+df = df.withColumn(
+    "cost_anomaly_score",
+    when(col("total_claim_amount") > 5000000, 4)
+    .when(col("total_claim_amount") > 2500000, 3)
+    .when(col("total_claim_amount") > 1500000, 2)
+    .otherwise(1)
 )
 
-# Drop intermediate columns
-base = base.drop("diagnosis_avg_cost", "diagnosis_stddev_cost", "cost_zscore")
+# -------------------------------------------------------------------
+# FREQUENCY RISK
+# -------------------------------------------------------------------
+freq = df.groupBy("patient_nik").agg(count("claim_id").alias("visit_count"))
 
-# ================================================================
-# 10. PATIENT FREQUENCY RISK
-# ================================================================
-print("\n[10/10] Calculating patient frequency...")
-patient_freq = base.groupBy("patient_nik").agg(
-    count("claim_id").alias("patient_frequency_risk")
-)
+df = df.join(freq, "patient_nik", "left")
 
-base = base.join(patient_freq, "patient_nik", "left")
-
-# ================================================================
-# 11. FINAL LABEL (GROUND TRUTH)
-# ================================================================
-print("\nCreating final labels...")
-
-# Human label from approval status
-base = base.withColumn(
-    "human_label",
-    when(col("status") == "declined", 1)
-    .when(col("status") == "approved", 0)
-    .otherwise(None)
-)
-
-# Rule-based flag
-base = base.withColumn(
-    "rule_violation_flag",
-    when(col("mismatch_count") > 0, 1)
-    .when(col("biaya_anomaly_score") >= 3, 1)
-    .when(col("patient_frequency_risk") > 10, 1)
+df = df.withColumn(
+    "frequency_risk",
+    when(col("visit_count") > 12, 3)
+    .when(col("visit_count") > 6, 2)
+    .when(col("visit_count") > 3, 1)
     .otherwise(0)
 )
 
-# Final label: prioritize human label, fallback to rules
-base = base.withColumn(
+# -------------------------------------------------------------------
+# COMPOSITE FRAUD SCORE (RULE ENGINE)
+# -------------------------------------------------------------------
+df = df.withColumn(
+    "rule_violation_flag",
+    when(col("mandatory_missed_total") > 0, 1)
+    .when(col("cost_anomaly_score") >= 3, 1)
+    .when(col("frequency_risk") >= 2, 1)
+    .otherwise(0)
+)
+
+# combine human_label
+df = df.withColumn(
     "final_label",
-    when(col("human_label").isNotNull(), col("human_label"))
+    when(col("status") == "declined", 1)
     .otherwise(col("rule_violation_flag"))
 )
 
-# ================================================================
-# 12. SELECT FINAL FEATURES
-# ================================================================
-base = base.withColumn("created_at", current_timestamp())
-
-final_columns = [
-    # Identifiers
+# -------------------------------------------------------------------
+# FINAL OUTPUT COLUMNS
+# -------------------------------------------------------------------
+final = df.select(
     "claim_id",
-    "patient_nik",
-    "patient_name",
-    "patient_gender",
-    "patient_dob",
-    "patient_age",
-    
-    # Visit info
-    "visit_date",
-    "visit_year",
-    "visit_month",
-    "visit_day",
-    "visit_type",
-    "doctor_name",
-    "department",
-    
-    # Diagnosis
-    "icd10_primary_code",
-    "icd10_primary_desc",
-    
-    # Raw arrays (for reference)
-    "procedures_icd9_codes",
-    "procedures_icd9_descs",
+    "primary_dx",
+    "primary_dx_desc",
+    "proc_codes",
     "drug_codes",
-    "drug_names",
     "vitamin_names",
-    
-    # Costs
     "total_procedure_cost",
     "total_drug_cost",
     "total_vitamin_cost",
     "total_claim_amount",
-    
-    # Clinical compatibility scores
-    "diagnosis_procedure_score",
-    "diagnosis_drug_score",
-    "diagnosis_vitamin_score",
-    
-    # Mismatch flags
+    "mandatory_proc_missed",
+    "mandatory_drug_missed",
+    "mandatory_vit_missed",
+    "mandatory_missed_total",
     "procedure_mismatch_flag",
     "drug_mismatch_flag",
     "vitamin_mismatch_flag",
     "mismatch_count",
-    
-    # Risk features
-    "patient_frequency_risk",
-    "biaya_anomaly_score",
-    
-    # Labels
+    "cost_anomaly_score",
+    "frequency_risk",
     "rule_violation_flag",
-    "human_label",
     "final_label",
-    "created_at"
-]
+    current_timestamp().alias("created_at"),
+    year("visit_date").alias("visit_year"),
+    month("visit_date").alias("visit_month")
+)
 
-feature_df = base.select(*final_columns)
-
-# ================================================================
-# 13. SAVE TO ICEBERG
-# ================================================================
-print("\nSaving to Iceberg curated table...")
-feature_df.write.format("iceberg") \
-    .partitionBy("visit_year", "visit_month") \
+# -------------------------------------------------------------------
+# SAVE TO ICEBERG
+# -------------------------------------------------------------------
+final.write \
+    .format("iceberg") \
     .mode("overwrite") \
+    .partitionBy("visit_year","visit_month") \
     .saveAsTable("iceberg_curated.claim_feature_set")
 
-# ================================================================
-# 14. DATA QUALITY REPORT
-# ================================================================
-print("\n" + "=" * 80)
-print("ETL COMPLETE - DATA QUALITY REPORT")
-print("=" * 80)
-
-total_claims = feature_df.count()
-fraud_count = feature_df.filter(col("final_label") == 1).count()
-non_fraud_count = total_claims - fraud_count
-
-print(f"Total claims processed: {total_claims:,}")
-print(f"Fraud claims: {fraud_count:,} ({fraud_count/total_claims*100:.1f}%)")
-print(f"Non-fraud claims: {non_fraud_count:,} ({non_fraud_count/total_claims*100:.1f}%)")
-
-print("\nMismatch distribution:")
-mismatch_dist = feature_df.groupBy("mismatch_count").count().orderBy("mismatch_count").collect()
-for row in mismatch_dist:
-    print(f"  {row['mismatch_count']} mismatches: {row['count']:,} claims")
-
-print("\nCost anomaly distribution:")
-anomaly_dist = feature_df.groupBy("biaya_anomaly_score").count().orderBy("biaya_anomaly_score").collect()
-for row in anomaly_dist:
-    print(f"  Score {row['biaya_anomaly_score']}: {row['count']:,} claims")
-
-print("\n" + "=" * 80)
-print("Feature set ready for training at: iceberg_curated.claim_feature_set")
-print("=" * 80)
-
-spark.stop()
+print("=== ETL COMPLETED SUCCESSFULLY ===")
