@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Centralized configuration for OPERASIONAL fraud detection system.
+Centralized configuration for BPJS fraud detection system.
 Integrates with Iceberg reference tables for clinical rules.
 Version: 2.0 - Production with Iceberg Integration
 """
@@ -189,7 +189,7 @@ FRAUD_PATTERNS = {
             "Obat generik ditagih harga branded",
             "Markup harga tidak wajar"
         ],
-        "recommendation": "Bandingkan dengan tarif OPERASIONAL standar"
+        "recommendation": "Bandingkan dengan tarif BPJS standar"
     },
     "unbundling": {
         "description": "Memecah satu prosedur menjadi beberapa tagihan",
@@ -239,15 +239,15 @@ FRAUD_PATTERNS = {
 MODEL_HYPERPARAMETERS = {
     "objective": "binary:logistic",
     "eval_metric": "auc",
-    "eta": 0.03,                    
-    "max_depth": 7,                
-    "subsample": 0.85,             
-    "colsample_bytree": 0.85,      
-    "min_child_weight": 3,         
-    "gamma": 0.3,                 
-    "reg_alpha": 0.1,              
-    "reg_lambda": 1.0,              
-    "tree_method": "hist",          
+    "eta": 0.03,                    # Learning rate
+    "max_depth": 7,                 # Tree depth
+    "subsample": 0.85,              # Row sampling
+    "colsample_bytree": 0.85,       # Column sampling
+    "min_child_weight": 3,          # Min samples in leaf
+    "gamma": 0.3,                   # Min loss reduction
+    "reg_alpha": 0.1,               # L1 regularization
+    "reg_lambda": 1.0,              # L2 regularization
+    "tree_method": "hist",          # Fast histogram method
     "seed": 42,
 }
 
@@ -264,7 +264,7 @@ TRAINING_CONFIG = {
 }
 
 # ================================================================
-# VALIDATION RULES FOR OPERASIONAL CLAIMS
+# VALIDATION RULES FOR BPJS CLAIMS
 # ================================================================
 VALIDATION_RULES = {
     "max_claim_amount": 5_000_000,      # Rp 5 juta
@@ -319,7 +319,7 @@ EXPLANATION_TEMPLATES = {
         "high_fraud": "🔴 HIGH RISK: {reasons}. Recommendation: {recommendation}",
         "medium_fraud": "🟡 MODERATE RISK: {reasons}. Recommendation: {recommendation}",
         "low_fraud": "🟢 LOW RISK: {reasons}",
-        "no_fraud": "✅ NO FRAUD INDICATORS: Claim meets OPERASIONAL standards"
+        "no_fraud": "✅ NO FRAUD INDICATORS: Claim meets BPJS standards"
     }
 }
 
@@ -329,7 +329,7 @@ EXPLANATION_TEMPLATES = {
 DEPLOYMENT_CONFIG = {
     "model_name": "bpjs_fraud_detection",
     "model_version": "v2.0_iceberg",
-    "model_description": "OPERASIONAL Fraud Detection - Integrated with Iceberg reference tables",
+    "model_description": "BPJS Fraud Detection - Integrated with Iceberg reference tables",
     "replicas": 2,
     "cpu": 2,
     "memory": 4,  # GB
