@@ -239,15 +239,15 @@ FRAUD_PATTERNS = {
 MODEL_HYPERPARAMETERS = {
     "objective": "binary:logistic",
     "eval_metric": "auc",
-    "eta": 0.03,                    # Learning rate
-    "max_depth": 7,                 # Tree depth
-    "subsample": 0.85,              # Row sampling
-    "colsample_bytree": 0.85,       # Column sampling
-    "min_child_weight": 3,          # Min samples in leaf
-    "gamma": 0.3,                   # Min loss reduction
-    "reg_alpha": 0.1,               # L1 regularization
-    "reg_lambda": 1.0,              # L2 regularization
-    "tree_method": "hist",          # Fast histogram method
+    "eta": 0.03,                    
+    "max_depth": 7,                
+    "subsample": 0.85,             
+    "colsample_bytree": 0.85,      
+    "min_child_weight": 3,         
+    "gamma": 0.3,                 
+    "reg_alpha": 0.1,              
+    "reg_lambda": 1.0,              
+    "tree_method": "hist",          
     "seed": 42,
 }
 
