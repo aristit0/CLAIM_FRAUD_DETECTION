@@ -144,13 +144,6 @@ removed = claims_before_filter - claims_after_filter
 print(f"  Removed {removed:,} claims without diagnosis ({removed/claims_before_filter*100:.1f}%)")
 print(f"  Remaining: {claims_after_filter:,} valid claims")
 
-# 3. Ensure all arrays are not null
-base = base.fillna({
-    "procedures_icd9_codes": [],
-    "drug_codes": [],
-    "vitamin_names": []
-})
-
 print("✓ Data quality fixes applied")
 
 
