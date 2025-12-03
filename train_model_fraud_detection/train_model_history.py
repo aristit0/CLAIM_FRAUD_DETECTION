@@ -31,11 +31,11 @@ spark = conn.get_spark_session()
 # Membaca tabel hasil ETL Advanced
 df_spark = spark.table("iceberg_curated.claim_feature_set")
 
-# Filter data valid (jika ada null di label)
-df_spark = df_spark.filter(col("label").isNotNull())
+# [FIX] Menggunakan 'final_label' sebagai target (bukan 'label')
+TARGET = "final_label"
 
-# Sampling jika data terlalu besar (opsional, untuk mempercepat dev)
-# df_spark = df_spark.limit(500000)
+# Filter data valid
+df_spark = df_spark.filter(col(TARGET).isNotNull())
 
 print(f"✓ Data Source: iceberg_curated.claim_feature_set")
 print(f"✓ Total Rows: {df_spark.count():,}")
@@ -52,29 +52,27 @@ print("\n[Step 2/10] Defining Features...")
 # --- Fitur Numerik (Hasil Windowing & Profiling) ---
 NUMERIC_FEATURES = [
     # Biaya
-    "total_claim_amount", "total_proc_cost", "total_drug_cost", "total_vit_cost",
+    "total_claim_amount", "total_procedure_cost", "total_drug_cost", "total_vitamin_cost",
     
     # Clinical Consistency Scores (0.0 - 1.0)
-    "score_proc", "score_drug", "score_vit",
+    "diagnosis_procedure_score", "diagnosis_drug_score", "diagnosis_vitamin_score",
     
-    # History Features (Windowing) - INI YANG BARU & KUAT
-    "patient_visit_last_30d",   # Frekuensi kunjungan (Doctor Shopping/Abuse)
-    "patient_amount_last_30d",  # Akumulasi biaya (Exposure Risk)
-    "days_since_last_visit",    # Pola kedatangan kembali
+    # History Features (Windowing)
+    "patient_frequency_risk",   # patient_visit_last_30d di rename di ETL
+    "patient_amount_last_30d",
+    "days_since_last_visit",
     
     # Statistical Features (Profiling)
-    "cost_z_score"              # Deteksi Upcoding / Phantom Billing relatif thd diagnosis
+    "biaya_anomaly_score",      # cost_z_score binning di ETL
+    "mismatch_count"
 ]
 
 # --- Fitur Kategorikal ---
-# 'doctor_name' kita masukkan karena kita ingin model mempelajari profil dokter 'nakal'
 CATEGORICAL_FEATURES = [
     "department", 
-    "icd10_primary",
+    "icd10_primary_code",
     "doctor_name" 
 ]
-
-TARGET = "label"
 
 print(f"✓ Numeric Features: {len(NUMERIC_FEATURES)}")
 print(f"✓ Categorical Features: {len(CATEGORICAL_FEATURES)}")
@@ -86,23 +84,28 @@ print("\n[Step 3/10] Cleaning & Preprocessing...")
 
 # Fill Nulls
 for col_name in NUMERIC_FEATURES:
-    df[col_name] = pd.to_numeric(df[col_name], errors='coerce').fillna(0)
-
-# Khusus days_since_last_visit, null/999 berarti kunjungan pertama (aman)
-# Kita biarkan 999 atau ganti ke nilai besar, model tree-based bisa handle ini.
+    if col_name in df.columns:
+        df[col_name] = pd.to_numeric(df[col_name], errors='coerce').fillna(0)
+    else:
+        print(f"⚠ Warning: Feature {col_name} not found in dataset. Filling with 0.")
+        df[col_name] = 0
 
 for col_name in CATEGORICAL_FEATURES:
-    df[col_name] = df[col_name].fillna("UNKNOWN").astype(str)
+    if col_name in df.columns:
+        df[col_name] = df[col_name].fillna("UNKNOWN").astype(str)
+    else:
+        print(f"⚠ Warning: Feature {col_name} not found in dataset. Filling with UNKNOWN.")
+        df[col_name] = "UNKNOWN"
 
 # ==============================================================================
 # 4. SPLITTING DATA
 # ==============================================================================
 print("\n[Step 4/10] Splitting Train/Test...")
 
-# Time-based split disarankan untuk data history, tapi random split ok untuk generalisasi
 X = df[NUMERIC_FEATURES + CATEGORICAL_FEATURES]
-y = df[TARGET]
+y = df[TARGET].astype(int)
 
+# Stratified Split
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.2, random_state=42, stratify=y
 )
@@ -116,23 +119,20 @@ print(f"✓ Fraud Rate (Train): {y_train.mean():.2%}")
 # ==============================================================================
 print("\n[Step 5/10] Encoding Categorical Features...")
 
-# Target Encoding sangat efektif untuk High Cardinality seperti 'doctor_name'
-# Ini mengubah nama dokter menjadi "rata-rata fraud rate" dokter tersebut
 encoder = TargetEncoder(cols=CATEGORICAL_FEATURES, smoothing=1.0)
 X_train_enc = encoder.fit_transform(X_train, y_train)
 X_test_enc = encoder.transform(X_test)
 
-print("✓ Target Encoding applied (Doctors & Diagnosis mapped to risk scores)")
+print("✓ Target Encoding applied")
 
 # ==============================================================================
 # 6. HANDLING IMBALANCE (SMOTE)
 # ==============================================================================
 print("\n[Step 6/10] Handling Class Imbalance...")
 
-# Hanya jalankan SMOTE jika fraud < 15% untuk menghindari over-synthetic
 if y_train.mean() < 0.15:
     print("  Applying SMOTE...")
-    smote = SMOTE(random_state=42, sampling_strategy=0.3) # Boost minority ke 30%
+    smote = SMOTE(random_state=42, sampling_strategy=0.3)
     X_train_res, y_train_res = smote.fit_resample(X_train_enc, y_train)
     print(f"  ✓ SMOTE applied. New Train Size: {X_train_res.shape}")
 else:
@@ -144,7 +144,6 @@ else:
 # ==============================================================================
 print("\n[Step 7/10] Training XGBoost Model...")
 
-# Menghitung scale_pos_weight untuk balancing loss function
 scale_pos_weight = (y_train_res == 0).sum() / (y_train_res == 1).sum()
 
 model = xgb.XGBClassifier(
@@ -155,7 +154,7 @@ model = xgb.XGBClassifier(
     subsample=0.8,
     colsample_bytree=0.8,
     scale_pos_weight=scale_pos_weight,
-    eval_metric="aucpr",  # AUC-PR lebih baik untuk imbalance data
+    eval_metric="aucpr",
     early_stopping_rounds=50,
     random_state=42,
     n_jobs=-1
@@ -173,7 +172,7 @@ print(f"✓ Training finished. Best Iteration: {model.best_iteration}")
 # 8. CALIBRATION
 # ==============================================================================
 print("\n[Step 8/10] Calibrating Probabilities...")
-# Agar output 0.8 benar-benar berarti 80% peluang fraud
+
 y_pred_raw = model.predict_proba(X_test_enc)[:, 1]
 
 calibrator = IsotonicRegression(out_of_bounds="clip")
@@ -189,7 +188,6 @@ print("\n" + "=" * 40)
 print("MODEL EVALUATION")
 print("=" * 40)
 
-# Cari threshold optimal (berdasarkan F1)
 thresholds = np.arange(0.1, 0.9, 0.05)
 best_th = 0.5
 best_f1 = 0
