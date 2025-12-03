@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Centralized configuration for BPJS fraud detection system.
+Centralized configuration for OPERASIONAL fraud detection system.
 Integrates with Iceberg reference tables for clinical rules.
 Version: 2.0 - Production with Iceberg Integration
 """
@@ -189,7 +189,7 @@ FRAUD_PATTERNS = {
             "Obat generik ditagih harga branded",
             "Markup harga tidak wajar"
         ],
-        "recommendation": "Bandingkan dengan tarif BPJS standar"
+        "recommendation": "Bandingkan dengan tarif OPERASIONAL standar"
     },
     "unbundling": {
         "description": "Memecah satu prosedur menjadi beberapa tagihan",
@@ -264,7 +264,7 @@ TRAINING_CONFIG = {
 }
 
 # ================================================================
-# VALIDATION RULES FOR BPJS CLAIMS
+# VALIDATION RULES FOR OPERASIONAL CLAIMS
 # ================================================================
 VALIDATION_RULES = {
     "max_claim_amount": 5_000_000,      # Rp 5 juta
@@ -319,7 +319,7 @@ EXPLANATION_TEMPLATES = {
         "high_fraud": "🔴 HIGH RISK: {reasons}. Recommendation: {recommendation}",
         "medium_fraud": "🟡 MODERATE RISK: {reasons}. Recommendation: {recommendation}",
         "low_fraud": "🟢 LOW RISK: {reasons}",
-        "no_fraud": "✅ NO FRAUD INDICATORS: Claim meets BPJS standards"
+        "no_fraud": "✅ NO FRAUD INDICATORS: Claim meets OPERASIONAL standards"
     }
 }
 
@@ -329,7 +329,7 @@ EXPLANATION_TEMPLATES = {
 DEPLOYMENT_CONFIG = {
     "model_name": "bpjs_fraud_detection",
     "model_version": "v2.0_iceberg",
-    "model_description": "BPJS Fraud Detection - Integrated with Iceberg reference tables",
+    "model_description": "OPERASIONAL Fraud Detection - Integrated with Iceberg reference tables",
     "replicas": 2,
     "cpu": 2,
     "memory": 4,  # GB
