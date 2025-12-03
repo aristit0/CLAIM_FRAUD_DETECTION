@@ -1,157 +1,179 @@
 #!/usr/bin/env python3
 """
-Fraud Detection Model for Health Claims - Production Inference API
-Provides fraud scoring for claim reviewers and clinical compatibility checks.
+BPJS Fraud Detection Model - Production Deployment for CML
+Detects fraud in new claim data with clinical compatibility checking
+Integrated with Iceberg reference tables
+
+Version: 2.0
+Purpose: Serve prediction requests from approval UI application
+Author: AI-Powered Fraud Detection System
+Date: December 2024
 """
 
 import json
 import pickle
 import numpy as np
 import pandas as pd
+import xgboost as xgb
 import cml.models_v1 as models
 from datetime import datetime
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
+import sys
 import os
+import traceback
 
-# ------------------------------------------------------------------
-# IMPORT CONFIG & GLOBALS
-# ------------------------------------------------------------------
+# ================================================================
+# CONFIGURATION IMPORT
+# ================================================================
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from config import (
+        NUMERIC_FEATURES, 
+        CATEGORICAL_FEATURES, 
+        FRAUD_PATTERNS,
+        COMPAT_RULES_FALLBACK
+    )
+    print("✓ Configuration loaded successfully")
+except ImportError as e:
+    print(f"⚠ Warning: Could not load config, using defaults: {e}")
+    # Fallback configuration
+    NUMERIC_FEATURES = [
+        "patient_age", "total_procedure_cost", "total_drug_cost", "total_vitamin_cost",
+        "total_claim_amount", "diagnosis_procedure_score", "diagnosis_drug_score",
+        "diagnosis_vitamin_score", "procedure_mismatch_flag", "drug_mismatch_flag",
+        "vitamin_mismatch_flag", "mismatch_count", "biaya_anomaly_score",
+        "patient_frequency_risk", "visit_year", "visit_month", "visit_day"
+    ]
+    CATEGORICAL_FEATURES = ["visit_type", "department", "icd10_primary_code"]
+    COMPAT_RULES_FALLBACK = {}
+    FRAUD_PATTERNS = {}
 
-from config import (
-    COMPAT_RULES_FALLBACK as COMPAT_RULES,
-    FRAUD_PATTERNS,
-)
-
-# Lokasi artefak relatif ke file ini
-MODEL_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_JSON = os.path.join(MODEL_DIR, "model.json")
-CALIB_FILE = os.path.join(MODEL_DIR, "calibrator.pkl")
-PREPROCESS_FILE = os.path.join(MODEL_DIR, "preprocess.pkl")
-META_FILE = os.path.join(MODEL_DIR, "meta.json")
+# ================================================================
+# GLOBAL VARIABLES
+# ================================================================
+MODEL_VERSION = "v2.0_production"
+MODEL_NAME = "BPJS Fraud Detection"
 
 print("=" * 80)
-print("CLAIM FRAUD DETECTION MODEL - MODULE IMPORT")
+print(f"{MODEL_NAME} - LOADING ARTIFACTS")
 print("=" * 80)
 
-# Global variables di-init None, nanti di-load lazy
-booster = None
-calibrator = None
-preprocess = None
-model_meta = None
-numeric_cols: List[str] = []
-categorical_cols: List[str] = []
-encoders: Dict[str, Any] = {}
-best_threshold: float = 0.5
-feature_importance_map: Dict[str, float] = {}
-feature_names: List[str] = []
-GLOBAL_FEATURE_IMPORTANCE: List[Dict[str, Any]] = []
-LOAD_ERROR: str = ""
+# ================================================================
+# LOAD MODEL ARTIFACTS
+# ================================================================
+MODEL_JSON = "model.json"
+CALIB_FILE = "calibrator.pkl"
+PREPROCESS_FILE = "preprocess.pkl"
+META_FILE = "meta.json"
 
+try:
+    # Load XGBoost Booster
+    booster = xgb.Booster()
+    booster.load_model(MODEL_JSON)
+    print(f"✓ Model loaded: {MODEL_JSON}")
+    
+    # Load Calibrator
+    with open(CALIB_FILE, "rb") as f:
+        calibrator = pickle.load(f)
+    print(f"✓ Calibrator loaded: {CALIB_FILE}")
+    
+    # Load Preprocessing metadata
+    with open(PREPROCESS_FILE, "rb") as f:
+        preprocess = pickle.load(f)
+    print(f"✓ Preprocessing config loaded: {PREPROCESS_FILE}")
+    
+    # Load metadata
+    with open(META_FILE, "r") as f:
+        model_meta = json.load(f)
+    print(f"✓ Metadata loaded: {META_FILE}")
+    
+    print("\n📊 Model Information:")
+    print(f"  Version: {model_meta.get('model_version', 'unknown')}")
+    print(f"  Training Date: {model_meta.get('training_date', 'unknown')}")
+    print(f"  AUC Score: {model_meta.get('performance', {}).get('auc', 0):.4f}")
+    print(f"  Fraud Detection Rate: {model_meta.get('performance', {}).get('fraud_detection_rate', 0):.1%}")
+    
+except Exception as e:
+    print(f"✗ Error loading artifacts: {e}")
+    raise
 
-def _ensure_model_loaded() -> None:
+# Extract preprocessing config
+numeric_cols = preprocess["numeric_cols"]
+categorical_cols = preprocess["categorical_cols"]
+encoders = preprocess["encoders"]
+best_threshold = preprocess["best_threshold"]
+feature_importance_map = preprocess["feature_importance"]
+
+feature_names = numeric_cols + categorical_cols
+
+print(f"\n✓ Model ready for inference")
+print(f"  Features: {len(feature_names)}")
+print(f"  Threshold: {best_threshold:.3f}")
+print("=" * 80)
+
+# Global feature importance for response
+GLOBAL_FEATURE_IMPORTANCE = [
+    {"feature": k, "importance": float(v)}
+    for k, v in sorted(feature_importance_map.items(), key=lambda kv: kv[1], reverse=True)
+]
+
+# ================================================================
+# CLINICAL COMPATIBILITY FUNCTIONS
+# ================================================================
+
+def load_clinical_rules_from_iceberg():
     """
-    Lazy-load model artefak. Kalau gagal, simpan pesan error di LOAD_ERROR,
-    tapi JANGAN raise exception supaya module tetap bisa di-import.
+    Load clinical rules from Iceberg reference tables.
+    Falls back to hardcoded rules if Iceberg not available.
     """
-    global booster, calibrator, preprocess, model_meta
-    global numeric_cols, categorical_cols, encoders
-    global best_threshold, feature_importance_map, feature_names
-    global GLOBAL_FEATURE_IMPORTANCE, LOAD_ERROR
-
-    # Kalau sudah loaded, tidak usah ulang
-    if booster is not None and preprocess is not None and model_meta is not None:
-        return
-
     try:
-        # Import xgboost di sini, bukan di top-level
-        try:
-            import xgboost as xgb
-        except Exception as e:
-            LOAD_ERROR = f"Failed to import xgboost: {type(e).__name__}: {e}"
-            print(f"[Loader] ✗ {LOAD_ERROR}")
-            return
-
-        print("\n[Loader] Loading model artefacts from:", MODEL_DIR)
-
-        # Load XGBoost Booster
-        booster_local = xgb.Booster()
-        booster_local.load_model(MODEL_JSON)
-        print(f"  ✓ Model loaded: {MODEL_JSON}")
-
-        # Load Calibrator
-        with open(CALIB_FILE, "rb") as f:
-            calibrator_local = pickle.load(f)
-        print(f"  ✓ Calibrator loaded: {CALIB_FILE}")
-
-        # Load Preprocessing metadata
-        with open(PREPROCESS_FILE, "rb") as f:
-            preprocess_local = pickle.load(f)
-        print(f"  ✓ Preprocessing config loaded: {PREPROCESS_FILE}")
-
-        # Load metadata
-        with open(META_FILE, "r") as f:
-            model_meta_local = json.load(f)
-        print(f"  ✓ Metadata loaded: {META_FILE}")
-
-        # Extract preprocessing config
-        numeric_cols_local = preprocess_local["numeric_cols"]
-        categorical_cols_local = preprocess_local["categorical_cols"]
-        encoders_local = preprocess_local["encoders"]
-        best_threshold_local = preprocess_local["best_threshold"]
-        feature_importance_map_local = preprocess_local["feature_importance"]
-
-        feature_names_local = numeric_cols_local + categorical_cols_local
-
-        global_feature_importance = [
-            {"feature": k, "importance": float(v)}
-            for k, v in sorted(
-                feature_importance_map_local.items(),
-                key=lambda kv: kv[1],
-                reverse=True,
-            )
-        ]
-
-        # Assign ke global hanya setelah semua sukses
-        booster = booster_local
-        calibrator = calibrator_local
-        preprocess = preprocess_local
-        model_meta = model_meta_local
-        numeric_cols = numeric_cols_local
-        categorical_cols = categorical_cols_local
-        encoders = encoders_local
-        best_threshold = best_threshold_local
-        feature_importance_map = feature_importance_map_local
-        feature_names = feature_names_local
-        GLOBAL_FEATURE_IMPORTANCE[:] = global_feature_importance
-        LOAD_ERROR = ""
-
-        print("\n[Loader] ✓ Model ready for inference")
-        print("=" * 80)
-        print(
-            f"  Version: {model_meta.get('model_version', 'unknown')}, "
-            f"Features: {model_meta.get('features', {}).get('total_count', 0)}"
-        )
-        print("=" * 80)
-
+        import cml.data_v1 as cmldata
+        conn = cmldata.get_connection("CDP-MSI")
+        spark = conn.get_spark_session()
+        
+        # Load reference tables
+        ref_dx_drug = spark.sql("SELECT * FROM iceberg_ref.clinical_rule_dx_drug").toPandas()
+        ref_dx_proc = spark.sql("SELECT * FROM iceberg_ref.clinical_rule_dx_procedure").toPandas()
+        ref_dx_vit = spark.sql("SELECT * FROM iceberg_ref.clinical_rule_dx_vitamin").toPandas()
+        
+        # Build compatibility dictionary
+        rules = {}
+        
+        # Get unique diagnoses
+        all_dx = set(list(ref_dx_drug['icd10_code'].unique()) + 
+                     list(ref_dx_proc['icd10_code'].unique()) + 
+                     list(ref_dx_vit['icd10_code'].unique()))
+        
+        for dx in all_dx:
+            rules[dx] = {
+                "procedures": ref_dx_proc[ref_dx_proc['icd10_code'] == dx]['icd9_code'].tolist(),
+                "drugs": ref_dx_drug[ref_dx_drug['icd10_code'] == dx]['drug_code'].tolist(),
+                "vitamins": ref_dx_vit[ref_dx_vit['icd10_code'] == dx]['vitamin_name'].tolist(),
+            }
+        
+        print(f"✓ Loaded clinical rules from Iceberg: {len(rules)} diagnoses")
+        spark.stop()
+        return rules
+        
     except Exception as e:
-        import traceback
-
-        LOAD_ERROR = f"{type(e).__name__}: {e}"
-        print(f"[Loader] ✗ Error loading artifacts: {LOAD_ERROR}")
-        print(traceback.format_exc())
+        print(f"⚠ Could not load from Iceberg, using fallback rules: {e}")
+        return COMPAT_RULES_FALLBACK
 
 
-# ================================================================
-# UTILITY FUNCTIONS
-# ================================================================
+# Load clinical rules at startup
+try:
+    CLINICAL_RULES = load_clinical_rules_from_iceberg()
+except Exception as e:
+    CLINICAL_RULES = COMPAT_RULES_FALLBACK
+
+print(f"✓ Clinical rules loaded: {len(CLINICAL_RULES)} diagnoses")
+
 
 def compute_age(dob: str, visit_date: str) -> int:
-    """Calculate patient age at visit date."""
+    """Calculate patient age at visit date"""
     try:
-        from datetime import datetime as _dt
-
-        dob_dt = _dt.strptime(str(dob), "%Y-%m-%d").date()
-        visit_dt = _dt.strptime(str(visit_date), "%Y-%m-%d").date()
+        dob_dt = datetime.strptime(str(dob), "%Y-%m-%d").date()
+        visit_dt = datetime.strptime(str(visit_date), "%Y-%m-%d").date()
         age = visit_dt.year - dob_dt.year - (
             (visit_dt.month, visit_dt.day) < (dob_dt.month, dob_dt.day)
         )
@@ -160,179 +182,192 @@ def compute_age(dob: str, visit_date: str) -> int:
         return 0
 
 
-def compute_compatibility_scores(
-    icd10: str,
-    procedures: List[str],
-    drugs: List[str],
-    vitamins: List[str],
-) -> Dict[str, float]:
+def compute_compatibility_scores(icd10: str, procedures: List[str], 
+                                 drugs: List[str], vitamins: List[str]) -> Dict[str, float]:
     """
-    Hitung skor kompatibilitas klinis diagnosis vs prosedur/obat/vitamin.
+    Calculate clinical compatibility scores.
+    Returns scores between 0.0 (no match) and 1.0 (perfect match).
     """
-    rules = COMPAT_RULES.get(icd10)
-
+    rules = CLINICAL_RULES.get(icd10)
+    
     if not rules:
         return {
             "diagnosis_procedure_score": 0.5,
             "diagnosis_drug_score": 0.5,
-            "diagnosis_vitamin_score": 0.5,
+            "diagnosis_vitamin_score": 0.5
         }
-
+    
     allowed_procedures = rules.get("procedures", [])
     allowed_drugs = rules.get("drugs", [])
     allowed_vitamins = rules.get("vitamins", [])
-
+    
     proc_score = 0.5
     if procedures and allowed_procedures:
         proc_matches = sum(1 for p in procedures if p in allowed_procedures)
-        proc_score = proc_matches / len(procedures)
-
+        proc_score = proc_matches / len(procedures) if len(procedures) > 0 else 0.5
+    elif not procedures:
+        proc_score = 0.0
+    
     drug_score = 0.5
     if drugs and allowed_drugs:
         drug_matches = sum(1 for d in drugs if d in allowed_drugs)
-        drug_score = drug_matches / len(drugs)
-
+        drug_score = drug_matches / len(drugs) if len(drugs) > 0 else 0.5
+    elif not drugs:
+        drug_score = 0.0
+    
     vit_score = 0.5
     if vitamins and allowed_vitamins:
         vit_matches = sum(1 for v in vitamins if v in allowed_vitamins)
-        vit_score = vit_matches / len(vitamins)
-
+        vit_score = vit_matches / len(vitamins) if len(vitamins) > 0 else 0.5
+    elif not vitamins:
+        vit_score = 0.0
+    
     return {
         "diagnosis_procedure_score": float(proc_score),
         "diagnosis_drug_score": float(drug_score),
-        "diagnosis_vitamin_score": float(vit_score),
+        "diagnosis_vitamin_score": float(vit_score)
     }
 
 
 def compute_mismatch_flags(compatibility_scores: Dict[str, float]) -> Dict[str, int]:
-    """
-    Flag ketidaksesuaian klinis berdasarkan skor kompatibilitas.
-    """
+    """Calculate mismatch flags based on compatibility scores"""
     proc_flag = 1 if compatibility_scores["diagnosis_procedure_score"] < 0.5 else 0
     drug_flag = 1 if compatibility_scores["diagnosis_drug_score"] < 0.5 else 0
     vit_flag = 1 if compatibility_scores["diagnosis_vitamin_score"] < 0.5 else 0
-
+    
     return {
         "procedure_mismatch_flag": proc_flag,
         "drug_mismatch_flag": drug_flag,
         "vitamin_mismatch_flag": vit_flag,
-        "mismatch_count": proc_flag + drug_flag + vit_flag,
+        "mismatch_count": proc_flag + drug_flag + vit_flag
     }
 
 
 def compute_cost_anomaly_score(total_claim: float, icd10: str = None) -> int:
     """
-    Skor anomali biaya secara umum (tanpa distribusi diagnosis spesifik).
+    Compute cost anomaly score based on claim amount.
+    1 = Normal, 2 = Moderate, 3 = High, 4 = Extreme
     """
     if total_claim > 1_500_000:
-        return 4  # Extreme
-    if total_claim > 1_000_000:
-        return 3  # High
-    if total_claim > 500_000:
-        return 2  # Moderate
-    return 1  # Normal
+        return 4
+    elif total_claim > 1_000_000:
+        return 3
+    elif total_claim > 500_000:
+        return 2
+    else:
+        return 1
 
 
-def get_compatibility_details(
-    icd10: str,
-    procedures: List[str],
-    drugs: List[str],
-    vitamins: List[str],
-) -> Dict[str, Any]:
+def get_compatibility_details(icd10: str, procedures: List[str], 
+                              drugs: List[str], vitamins: List[str]) -> Dict[str, Any]:
     """
-    Detail kompatibilitas klinis untuk UI.
+    Get detailed compatibility analysis for UI display.
     """
-    rules = COMPAT_RULES.get(icd10)
-
+    rules = CLINICAL_RULES.get(icd10)
+    
     if not rules:
         return {
             "diagnosis_known": False,
-            "diagnosis_description": "Diagnosis tidak ada di clinical rules",
+            "diagnosis_description": f"Diagnosis {icd10} tidak memiliki clinical rule yang terdefinisi",
             "procedure_details": [],
             "drug_details": [],
-            "vitamin_details": [],
+            "vitamin_details": []
         }
-
+    
     allowed_procedures = rules.get("procedures", [])
     allowed_drugs = rules.get("drugs", [])
     allowed_vitamins = rules.get("vitamins", [])
-
-    procedure_details = [
-        {
+    
+    procedure_details = []
+    for proc in procedures:
+        is_compatible = proc in allowed_procedures
+        procedure_details.append({
             "code": proc,
-            "compatible": proc in allowed_procedures,
-            "status": "✓ Compatible" if proc in allowed_procedures else "✗ Incompatible",
-        }
-        for proc in procedures
-    ]
-
-    drug_details = [
-        {
+            "compatible": is_compatible,
+            "status": "✓ Sesuai" if is_compatible else "✗ Tidak Sesuai",
+            "severity": "normal" if is_compatible else "warning"
+        })
+    
+    drug_details = []
+    for drug in drugs:
+        is_compatible = drug in allowed_drugs
+        drug_details.append({
             "code": drug,
-            "compatible": drug in allowed_drugs,
-            "status": "✓ Compatible" if drug in allowed_drugs else "✗ Incompatible",
-        }
-        for drug in drugs
-    ]
-
-    vitamin_details = [
-        {
+            "compatible": is_compatible,
+            "status": "✓ Sesuai" if is_compatible else "✗ Tidak Sesuai",
+            "severity": "normal" if is_compatible else "warning"
+        })
+    
+    vitamin_details = []
+    for vit in vitamins:
+        is_compatible = vit in allowed_vitamins
+        vitamin_details.append({
             "name": vit,
-            "compatible": vit in allowed_vitamins,
-            "status": "✓ Compatible" if vit in allowed_vitamins else "✗ Incompatible",
-        }
-        for vit in vitamins
-    ]
-
+            "compatible": is_compatible,
+            "status": "✓ Sesuai" if is_compatible else "✗ Tidak Sesuai",
+            "severity": "normal" if is_compatible else "info"
+        })
+    
     return {
         "diagnosis_known": True,
+        "diagnosis_code": icd10,
         "diagnosis_description": rules.get("description", ""),
         "procedure_details": procedure_details,
         "drug_details": drug_details,
         "vitamin_details": vitamin_details,
+        "summary": {
+            "total_procedures": len(procedures),
+            "compatible_procedures": sum(1 for p in procedure_details if p["compatible"]),
+            "total_drugs": len(drugs),
+            "compatible_drugs": sum(1 for d in drug_details if d["compatible"]),
+            "total_vitamins": len(vitamins),
+            "compatible_vitamins": sum(1 for v in vitamin_details if v["compatible"])
+        }
     }
 
 
 # ================================================================
-# FEATURE ENGINEERING (MUST MATCH ETL!)
+# FEATURE ENGINEERING
 # ================================================================
 
-def build_features_from_raw(raw: Dict[str, Any]) -> tuple:
+def build_features_from_claim(claim: Dict[str, Any]) -> tuple:
     """
     Transform raw claim data into model features.
+    MUST match ETL feature engineering exactly!
     """
-    claim_id = raw.get("claim_id")
-
-    visit_date = raw.get("visit_date")
+    claim_id = claim.get("claim_id")
+    
+    visit_date = claim.get("visit_date")
     dt = datetime.strptime(visit_date, "%Y-%m-%d").date()
-
-    procedures = raw.get("procedures", [])
-    drugs = raw.get("drugs", [])
-    vitamins = raw.get("vitamins", [])
-
+    
+    procedures = claim.get("procedures", [])
+    drugs = claim.get("drugs", [])
+    vitamins = claim.get("vitamins", [])
+    
     if not isinstance(procedures, list):
         procedures = [procedures] if procedures else []
     if not isinstance(drugs, list):
         drugs = [drugs] if drugs else []
     if not isinstance(vitamins, list):
         vitamins = [vitamins] if vitamins else []
-
-    total_proc = float(raw.get("total_procedure_cost", 0))
-    total_drug = float(raw.get("total_drug_cost", 0))
-    total_vit = float(raw.get("total_vitamin_cost", 0))
-    total_claim = float(raw.get("total_claim_amount", 0))
-
-    patient_age = compute_age(raw.get("patient_dob"), visit_date)
-
-    icd10 = raw.get("icd10_primary_code", "UNKNOWN")
+    
+    total_proc = float(claim.get("total_procedure_cost", 0))
+    total_drug = float(claim.get("total_drug_cost", 0))
+    total_vit = float(claim.get("total_vitamin_cost", 0))
+    total_claim = float(claim.get("total_claim_amount", 0))
+    
+    patient_age = compute_age(claim.get("patient_dob"), visit_date)
+    
+    icd10 = claim.get("icd10_primary_code", "UNKNOWN")
     compatibility = compute_compatibility_scores(icd10, procedures, drugs, vitamins)
+    
     mismatch = compute_mismatch_flags(compatibility)
+    
     biaya_anomaly = compute_cost_anomaly_score(total_claim, icd10)
-
-    patient_freq = 2  # dummy, nanti bisa ganti
-
+    
+    patient_freq = claim.get("patient_frequency_risk", 2)
+    
     feature_row = {
-        # Numeric
         "patient_age": patient_age,
         "total_procedure_cost": total_proc,
         "total_drug_cost": total_drug,
@@ -343,442 +378,413 @@ def build_features_from_raw(raw: Dict[str, Any]) -> tuple:
         "visit_year": dt.year,
         "visit_month": dt.month,
         "visit_day": dt.day,
-        # Compatibility scores
         "diagnosis_procedure_score": compatibility["diagnosis_procedure_score"],
         "diagnosis_drug_score": compatibility["diagnosis_drug_score"],
         "diagnosis_vitamin_score": compatibility["diagnosis_vitamin_score"],
-        # Flags
         "procedure_mismatch_flag": mismatch["procedure_mismatch_flag"],
         "drug_mismatch_flag": mismatch["drug_mismatch_flag"],
         "vitamin_mismatch_flag": mismatch["vitamin_mismatch_flag"],
         "mismatch_count": mismatch["mismatch_count"],
-        # Categoricals
-        "visit_type": raw.get("visit_type", "UNKNOWN"),
-        "department": raw.get("department", "UNKNOWN"),
+        "visit_type": claim.get("visit_type", "UNKNOWN"),
+        "department": claim.get("department", "UNKNOWN"),
         "icd10_primary_code": icd10,
     }
-
+    
     return claim_id, feature_row, compatibility, mismatch
 
 
-def build_feature_df(records: List[Dict[str, Any]]) -> tuple:
-    """
-    Bangun DataFrame fitur dan DMatrix XGBoost dari feature rows.
-    """
-    from xgboost import DMatrix  # import lokal, setelah dipastikan tersedia
-
+def build_feature_dataframe(records: List[Dict[str, Any]]) -> tuple:
+    """Build feature DataFrame and apply preprocessing."""
     df = pd.DataFrame.from_records(records)
-
-    # Pastikan semua kolom ada
+    
     for col_name in numeric_cols + categorical_cols:
         if col_name not in df.columns:
             df[col_name] = None
-
-    # Encode kategorikal pakai encoder hasil training
+    
     for col_name in categorical_cols:
         df[col_name] = df[col_name].astype(str).fillna("UNKNOWN")
         enc = encoders[col_name]
         df[col_name] = enc.transform(df[[col_name]])[col_name]
-
-    # Bersihkan kolom numerik
+    
     for col_name in numeric_cols:
         df[col_name] = pd.to_numeric(df[col_name], errors="coerce").fillna(0.0)
         df[col_name].replace([np.inf, -np.inf], 0, inplace=True)
-
+    
     X = df[numeric_cols + categorical_cols]
-    dmatrix = DMatrix(X, feature_names=feature_names)
-
+    dmatrix = xgb.DMatrix(X, feature_names=feature_names)
+    
     return df, dmatrix
 
 
 # ================================================================
-# EXPLANATION & RECOMMENDATION
+# EXPLANATION GENERATION
 # ================================================================
 
-def generate_explanation(
-    row: Dict[str, Any],
-    fraud_score: float,
-    icd10: str,
-    compatibility_details: Dict[str, Any],
-) -> str:
-    reasons: List[str] = []
-
+def generate_explanation(row: Dict[str, Any], fraud_score: float, icd10: str) -> str:
+    """Generate human-readable explanation for BPJS reviewers."""
+    reasons = []
+    
     if row["mismatch_count"] > 0:
         mismatch_items = []
         if row["procedure_mismatch_flag"] == 1:
-            mismatch_items.append("prosedur tidak sesuai diagnosis")
+            mismatch_items.append("tindakan tidak sesuai diagnosis")
         if row["drug_mismatch_flag"] == 1:
             mismatch_items.append("obat tidak sesuai diagnosis")
         if row["vitamin_mismatch_flag"] == 1:
             mismatch_items.append("vitamin tidak relevan")
-
         reasons.append(f"Ketidaksesuaian klinis: {', '.join(mismatch_items)}")
-
+    
     if row["biaya_anomaly_score"] >= 3:
         severity = "sangat tinggi" if row["biaya_anomaly_score"] == 4 else "tinggi"
-        reasons.append(f"Biaya klaim {severity} untuk diagnosis ini")
-
+        reasons.append(f"Biaya klaim {severity} untuk diagnosis ini (Rp {row['total_claim_amount']:,.0f})")
+    
     if row["patient_frequency_risk"] > 10:
-        reasons.append("Frekuensi klaim pasien mencurigakan")
-
+        reasons.append(f"Frekuensi klaim mencurigakan ({row['patient_frequency_risk']} klaim)")
+    
     if fraud_score > 0.8:
-        risk_level = "RISIKO TINGGI"
-        color = "🔴"
+        risk_level = "🔴 RISIKO TINGGI"
     elif fraud_score > 0.5:
-        risk_level = "RISIKO SEDANG"
-        color = "🟡"
+        risk_level = "🟡 RISIKO SEDANG"
     elif fraud_score > 0.3:
-        risk_level = "RISIKO RENDAH"
-        color = "🟢"
+        risk_level = "🟠 RISIKO RENDAH"
     else:
-        risk_level = "RISIKO MINIMAL"
-        color = "🟢"
-
+        risk_level = "🟢 RISIKO MINIMAL"
+    
     if reasons:
-        explanation = f"{color} {risk_level}: " + "; ".join(reasons)
+        explanation = f"{risk_level}: " + "; ".join(reasons)
     else:
-        explanation = f"{color} {risk_level}: Tidak ada indikator fraud yang terdeteksi"
-
+        explanation = f"{risk_level}: Tidak ada indikator fraud yang signifikan"
+    
     return explanation
 
 
-def get_top_risk_factors(
-    row: Dict[str, Any],
-    feature_importance: Dict[str, float],
-    top_n: int = 5,
-) -> List[Dict[str, Any]]:
-    risk_factors: List[Dict[str, Any]] = []
-    top_features = list(feature_importance.items())[: top_n * 3]
+def get_recommendation(fraud_score: float, mismatch_count: int, cost_anomaly: int) -> str:
+    """Generate actionable recommendation for reviewer"""
+    if fraud_score > 0.8:
+        return "🚫 RECOMMENDED: Decline atau minta dokumentasi tambahan lengkap"
+    elif fraud_score > 0.5:
+        if mismatch_count > 0:
+            return "⚠️ RECOMMENDED: Verifikasi justifikasi klinis dengan dokter"
+        else:
+            return "⚠️ RECOMMENDED: Review manual mendalam diperlukan"
+    elif fraud_score > 0.3:
+        return "📋 RECOMMENDED: Quick review, approve jika dokumen lengkap"
+    else:
+        return "✅ RECOMMENDED: Approve, tidak ada red flag"
 
+
+def get_top_risk_factors(row: Dict[str, Any], top_n: int = 5) -> List[Dict[str, Any]]:
+    """Identify top risk factors for this claim"""
+    risk_factors = []
+    top_features = list(feature_importance_map.items())[:top_n * 2]
+    
     for feat_name, importance in top_features:
-        if feat_name not in row:
-            continue
-
-        value = row[feat_name]
-
-        if isinstance(value, (int, float)):
-            if feat_name.endswith("_flag") and value == 1:
-                interpretation = {
-                    "procedure_mismatch_flag": "Prosedur tidak sesuai diagnosis",
-                    "drug_mismatch_flag": "Obat tidak sesuai diagnosis",
-                    "vitamin_mismatch_flag": "Vitamin tidak relevan",
-                }.get(feat_name, feat_name.replace("_", " ").title())
-
-                risk_factors.append(
-                    {
+        if feat_name in row:
+            value = row[feat_name]
+            
+            if isinstance(value, (int, float)):
+                if feat_name.endswith("_flag") and value == 1:
+                    interpretation = {
+                        "procedure_mismatch_flag": "Tindakan tidak sesuai diagnosis",
+                        "drug_mismatch_flag": "Obat tidak sesuai diagnosis",
+                        "vitamin_mismatch_flag": "Vitamin tidak relevan",
+                    }.get(feat_name, feat_name.replace("_", " ").title())
+                    
+                    risk_factors.append({
                         "feature": feat_name,
                         "value": value,
                         "importance": float(importance),
-                        "interpretation": interpretation,
-                    }
-                )
-
-            elif feat_name == "mismatch_count" and value > 0:
-                risk_factors.append(
-                    {
+                        "interpretation": interpretation
+                    })
+                    
+                elif feat_name == "mismatch_count" and value > 0:
+                    risk_factors.append({
                         "feature": feat_name,
                         "value": value,
                         "importance": float(importance),
-                        "interpretation": f"{int(value)} ketidaksesuaian klinis terdeteksi",
-                    }
-                )
-
-            elif feat_name == "biaya_anomaly_score" and value >= 2:
-                severity = ["", "Normal", "Sedang", "Tinggi", "Sangat Tinggi"][int(value)]
-                risk_factors.append(
-                    {
+                        "interpretation": f"{int(value)} ketidaksesuaian klinis terdeteksi"
+                    })
+                    
+                elif feat_name == "biaya_anomaly_score" and value >= 2:
+                    severity = ["", "Normal", "Sedang", "Tinggi", "Sangat Tinggi"][int(value)]
+                    risk_factors.append({
                         "feature": feat_name,
                         "value": value,
                         "importance": float(importance),
-                        "interpretation": f"Anomali biaya level {severity}",
-                    }
-                )
-
-        if len(risk_factors) >= top_n:
-            break
-
+                        "interpretation": f"Anomali biaya: {severity}"
+                    })
+            
+            if len(risk_factors) >= top_n:
+                break
+    
     return risk_factors
 
 
-def get_recommendation(
-    fraud_score: float,
-    mismatch_count: int,
-    cost_anomaly: int,
-) -> str:
-    if fraud_score > 0.8:
-        return "RECOMMENDED: Decline atau minta dokumen pendukung tambahan"
-    if fraud_score > 0.5:
-        return "RECOMMENDED: Manual review mendalam diperlukan"
-    if mismatch_count > 0:
-        return "RECOMMENDED: Verifikasi ketidaksesuaian klinis dengan dokter"
-    if cost_anomaly >= 3:
-        return "RECOMMENDED: Verifikasi justifikasi biaya tinggi"
-    return "RECOMMENDED: Approve jika dokumen lengkap"
-
-
 # ================================================================
-# VALIDATION
+# INPUT VALIDATION
 # ================================================================
 
 def validate_input(data: Dict[str, Any]) -> tuple:
-    errors: List[str] = []
-
-    if "raw_records" not in data:
-        errors.append("Missing 'raw_records' field")
+    """Validate input data from approval UI"""
+    errors = []
+    
+    if "claims" not in data:
+        errors.append("Missing 'claims' field")
         return False, errors
-
-    raw_records = data["raw_records"]
-
-    if not isinstance(raw_records, list):
-        errors.append("'raw_records' must be a list")
+    
+    claims = data["claims"]
+    
+    if not isinstance(claims, list):
+        errors.append("'claims' must be a list")
         return False, errors
-
-    if len(raw_records) == 0:
-        errors.append("'raw_records' cannot be empty")
+    
+    if len(claims) == 0:
+        errors.append("'claims' cannot be empty")
         return False, errors
-
+    
     required_fields = [
-        "claim_id",
-        "patient_dob",
-        "visit_date",
-        "total_procedure_cost",
-        "total_drug_cost",
-        "total_vitamin_cost",
-        "total_claim_amount",
-        "icd10_primary_code",
-        "department",
-        "visit_type",
+        "claim_id", "patient_dob", "visit_date",
+        "total_procedure_cost", "total_drug_cost", "total_vitamin_cost",
+        "total_claim_amount", "icd10_primary_code", "department", "visit_type"
     ]
-
-    for i, rec in enumerate(raw_records):
-        missing = [f for f in required_fields if f not in rec]
+    
+    for i, claim in enumerate(claims):
+        missing = [f for f in required_fields if f not in claim]
         if missing:
-            errors.append(f"Record {i}: missing required fields {missing}")
-
+            errors.append(f"Claim {i} (ID: {claim.get('claim_id', 'unknown')}): missing {missing}")
+    
     if errors:
         return False, errors
-
+    
     return True, []
 
 
 # ================================================================
-# MAIN INFERENCE HANDLER
+# MAIN PREDICTION ENDPOINT
 # ================================================================
 
 @models.cml_model
 def predict(data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Endpoint utama untuk fraud scoring klaim kesehatan.
+    Main prediction endpoint for BPJS fraud detection.
+    Called by approval UI application.
+    
+    Input format:
+    {
+        "claims": [
+            {
+                "claim_id": "CLM001",
+                "patient_dob": "1980-01-01",
+                "visit_date": "2024-12-04",
+                "visit_type": "rawat jalan",
+                "department": "Poli Umum",
+                "icd10_primary_code": "J06",
+                "procedures": ["89.02"],
+                "drugs": ["KFA001"],
+                "vitamins": ["Vitamin C 500 mg"],
+                "total_procedure_cost": 100000,
+                "total_drug_cost": 50000,
+                "total_vitamin_cost": 20000,
+                "total_claim_amount": 170000
+            }
+        ]
+    }
     """
-    # Pastikan artefak sudah loaded
-    _ensure_model_loaded()
-    if LOAD_ERROR:
-        return {
-            "status": "error",
-            "error": "Model artifacts failed to load",
-            "details": LOAD_ERROR,
-        }
-
-    # Parse JSON kalau datang sebagai string
+    
     if isinstance(data, str):
         try:
             data = json.loads(data)
         except json.JSONDecodeError as e:
-            return {"status": "error", "error": f"Invalid JSON: {e}"}
-
-    # Validasi input
+            return {
+                "status": "error",
+                "error": f"Invalid JSON: {str(e)}"
+            }
+    
     is_valid, validation_errors = validate_input(data)
     if not is_valid:
         return {
             "status": "error",
             "error": "Input validation failed",
-            "details": validation_errors,
+            "details": validation_errors
         }
-
-    raw_records = data["raw_records"]
-
+    
+    claims = data["claims"]
+    
     try:
-        processed_records: List[Dict[str, Any]] = []
-        claim_ids: List[Any] = []
-        icd10_codes: List[str] = []
-
-        for raw in raw_records:
-            claim_id, feature_row, _, _ = build_features_from_raw(raw)
+        processed_records = []
+        claim_ids = []
+        compatibility_data = []
+        mismatch_data = []
+        icd10_codes = []
+        raw_claims = []
+        
+        for claim in claims:
+            claim_id, feature_row, compatibility, mismatch = build_features_from_claim(claim)
             claim_ids.append(claim_id)
             processed_records.append(feature_row)
-            icd10_codes.append(raw.get("icd10_primary_code", "UNKNOWN"))
-
-        df_features, dmatrix = build_feature_df(processed_records)
-
-        # Booster dan calibrator sudah disiapkan oleh _ensure_model_loaded
+            compatibility_data.append(compatibility)
+            mismatch_data.append(mismatch)
+            icd10_codes.append(claim.get("icd10_primary_code", "UNKNOWN"))
+            raw_claims.append(claim)
+        
+        df_features, dmatrix = build_feature_dataframe(processed_records)
+        
         y_raw = booster.predict(dmatrix)
         y_calibrated = calibrator.predict(y_raw)
         y_pred = (y_calibrated >= best_threshold).astype(int)
-
-        results: List[Dict[str, Any]] = []
-
+        
+        results = []
+        
         for i, claim_id in enumerate(claim_ids):
             row = df_features.iloc[i].to_dict()
             fraud_score = float(y_calibrated[i])
             model_flag = int(y_pred[i])
-
+            
             confidence = abs(fraud_score - best_threshold) * 2
             confidence = min(confidence, 1.0)
-
+            
             if fraud_score > 0.8:
-                risk_level = "HIGH RISK"
+                risk_level = "HIGH"
+                risk_color = "red"
             elif fraud_score > 0.5:
-                risk_level = "MODERATE RISK"
+                risk_level = "MODERATE"
+                risk_color = "orange"
             elif fraud_score > 0.3:
-                risk_level = "LOW RISK"
+                risk_level = "LOW"
+                risk_color = "yellow"
             else:
-                risk_level = "MINIMAL RISK"
-
-            raw_record = raw_records[i]
-            procedures = raw_record.get("procedures", [])
-            drugs = raw_record.get("drugs", [])
-            vitamins = raw_record.get("vitamins", [])
-
+                risk_level = "MINIMAL"
+                risk_color = "green"
+            
+            raw_claim = raw_claims[i]
+            procedures = raw_claim.get("procedures", [])
+            drugs = raw_claim.get("drugs", [])
+            vitamins = raw_claim.get("vitamins", [])
+            
             if not isinstance(procedures, list):
                 procedures = [procedures] if procedures else []
             if not isinstance(drugs, list):
                 drugs = [drugs] if drugs else []
             if not isinstance(vitamins, list):
                 vitamins = [vitamins] if vitamins else []
-
+            
             compatibility_details = get_compatibility_details(
-                icd10_codes[i],
-                procedures,
-                drugs,
-                vitamins,
+                icd10_codes[i], procedures, drugs, vitamins
             )
-
-            explanation = generate_explanation(
-                row,
-                fraud_score,
-                icd10_codes[i],
-                compatibility_details,
-            )
-
-            risk_factors = get_top_risk_factors(
-                row,
-                feature_importance_map,
-                top_n=5,
-            )
-
-            recommendation = get_recommendation(
-                fraud_score,
-                row["mismatch_count"],
-                row["biaya_anomaly_score"],
-            )
-
+            
+            explanation = generate_explanation(row, fraud_score, icd10_codes[i])
+            risk_factors = get_top_risk_factors(row, top_n=5)
+            recommendation = get_recommendation(fraud_score, row["mismatch_count"], row["biaya_anomaly_score"])
+            
             clinical_compat = {
                 "procedure_compatible": row["diagnosis_procedure_score"] >= 0.5,
                 "drug_compatible": row["diagnosis_drug_score"] >= 0.5,
                 "vitamin_compatible": row["diagnosis_vitamin_score"] >= 0.5,
                 "overall_compatible": row["mismatch_count"] == 0,
-                "details": compatibility_details,
+                "details": compatibility_details
             }
-
-            results.append(
-                {
-                    "claim_id": claim_id,
-                    "fraud_score": round(fraud_score, 4),
-                    "fraud_probability": f"{fraud_score * 100:.1f}%",
-                    "model_flag": model_flag,
-                    "final_flag": model_flag,
-                    "risk_level": risk_level,
-                    "confidence": round(confidence, 4),
-                    "explanation": explanation,
-                    "recommendation": recommendation,
-                    "top_risk_factors": risk_factors,
-                    "clinical_compatibility": clinical_compat,
-                    "features": {
-                        "mismatch_count": int(row["mismatch_count"]),
-                        "cost_anomaly_score": int(row["biaya_anomaly_score"]),
-                        "total_claim_amount": float(row["total_claim_amount"]),
-                        "diagnosis_procedure_score": round(
-                            row["diagnosis_procedure_score"], 3
-                        ),
-                        "diagnosis_drug_score": round(
-                            row["diagnosis_drug_score"], 3
-                        ),
-                        "diagnosis_vitamin_score": round(
-                            row["diagnosis_vitamin_score"], 3
-                        ),
-                    },
+            
+            results.append({
+                "claim_id": claim_id,
+                "fraud_score": round(fraud_score, 4),
+                "fraud_probability": f"{fraud_score * 100:.1f}%",
+                "fraud_flag": model_flag,
+                "risk_level": risk_level,
+                "risk_color": risk_color,
+                "confidence": round(confidence, 4),
+                "explanation": explanation,
+                "recommendation": recommendation,
+                "top_risk_factors": risk_factors,
+                "clinical_compatibility": clinical_compat,
+                "features": {
+                    "mismatch_count": int(row["mismatch_count"]),
+                    "cost_anomaly_score": int(row["biaya_anomaly_score"]),
+                    "total_claim_amount": float(row["total_claim_amount"]),
+                    "diagnosis_procedure_score": round(row["diagnosis_procedure_score"], 3),
+                    "diagnosis_drug_score": round(row["diagnosis_drug_score"], 3),
+                    "diagnosis_vitamin_score": round(row["diagnosis_vitamin_score"], 3),
+                },
+                "patient_info": {
+                    "age": int(row["patient_age"]),
+                    "frequency_risk": int(row["patient_frequency_risk"])
                 }
-            )
-
+            })
+        
         return {
             "status": "success",
-            "model_version": model_meta.get("model_version", "unknown"),
+            "model_version": model_meta.get("model_version", MODEL_VERSION),
+            "model_name": MODEL_NAME,
             "timestamp": datetime.now().isoformat(),
             "total_claims_processed": len(results),
-            "fraud_detected": sum(1 for r in results if r["model_flag"] == 1),
+            "fraud_detected": sum(1 for r in results if r["fraud_flag"] == 1),
+            "high_risk_count": sum(1 for r in results if r["risk_level"] == "HIGH"),
             "results": results,
             "model_info": {
                 "threshold": best_threshold,
                 "training_auc": model_meta.get("performance", {}).get("auc", 0),
                 "training_f1": model_meta.get("performance", {}).get("f1", 0),
-                "fraud_detection_rate": model_meta.get("performance", {}).get(
-                    "fraud_detection_rate", 0
-                ),
-            },
+                "fraud_detection_rate": model_meta.get("performance", {}).get("fraud_detection_rate", 0),
+            }
         }
-
+    
     except Exception as e:
-        import traceback
-
         return {
             "status": "error",
             "error": str(e),
             "traceback": traceback.format_exc(),
+            "timestamp": datetime.now().isoformat()
         }
 
 
-# ================================================================
-# HEALTH CHECK ENDPOINT
-# ================================================================
+@models.cml_model
+def predict_batch(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Batch prediction endpoint"""
+    return predict(data)
+
 
 @models.cml_model
-def health_check(data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Health check sederhana untuk model serving.
-    """
-    _ensure_model_loaded()
+def health_check(data: Dict[str, Any] = None) -> Dict[str, Any]:
+    """Health check endpoint"""
     return {
-        "status": "ok" if not LOAD_ERROR else "error",
-        "load_error": LOAD_ERROR,
-        "model_version": model_meta.get("model_version", "unknown") if model_meta else None,
+        "status": "healthy",
+        "model_name": MODEL_NAME,
+        "model_version": model_meta.get("model_version", MODEL_VERSION),
         "timestamp": datetime.now().isoformat(),
         "features_count": len(feature_names),
         "threshold": best_threshold,
-        "supported_diagnoses": len(COMPAT_RULES),
+        "clinical_rules_loaded": len(CLINICAL_RULES),
+        "training_metrics": {
+            "auc": model_meta.get("performance", {}).get("auc", 0),
+            "f1": model_meta.get("performance", {}).get("f1", 0),
+            "fraud_detection_rate": model_meta.get("performance", {}).get("fraud_detection_rate", 0),
+        }
     }
 
-
-# ================================================================
-# MODEL INFO ENDPOINT
-# ================================================================
 
 @models.cml_model
-def get_model_info(data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Mengembalikan metadata model dan feature importance.
-    """
-    _ensure_model_loaded()
-    if LOAD_ERROR:
-        return {"status": "error", "error": LOAD_ERROR}
-
+def get_model_info(data: Dict[str, Any] = None) -> Dict[str, Any]:
+    """Model metadata endpoint"""
     return {
         "status": "success",
+        "model_name": MODEL_NAME,
         "model_metadata": model_meta,
         "feature_importance": GLOBAL_FEATURE_IMPORTANCE[:20],
-        "compatibility_rules_count": len(COMPAT_RULES),
-        "supported_diagnoses": list(COMPAT_RULES.keys()),
-        "fraud_patterns": FRAUD_PATTERNS,
+        "clinical_rules": {
+            "total_diagnoses": len(CLINICAL_RULES),
+            "supported_diagnoses": list(CLINICAL_RULES.keys()),
+        },
+        "fraud_patterns": FRAUD_PATTERNS if 'FRAUD_PATTERNS' in globals() else {},
+        "capabilities": [
+            "Real-time fraud detection",
+            "Clinical compatibility checking",
+            "Cost anomaly detection",
+            "Patient frequency analysis",
+            "Detailed explanations for reviewers"
+        ]
     }
 
 
-print("\nModel inference API module imported. Lazy loader will load artifacts on first call.")
+if __name__ == "__main__":
+    print("\n" + "=" * 80)
+    print(f"{MODEL_NAME} - INFERENCE API READY FOR CML DEPLOYMENT")
+    print("=" * 80)
