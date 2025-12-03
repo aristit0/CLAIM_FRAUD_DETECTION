@@ -29,7 +29,7 @@ conn = cmldata.get_connection("CDP-MSI")
 spark = conn.get_spark_session()
 
 # Membaca tabel hasil ETL Advanced
-df_spark = spark.table("iceberg_curated.claim_training_set")
+df_spark = spark.table("iceberg_curated.claim_feature_set")
 
 # Filter data valid (jika ada null di label)
 df_spark = df_spark.filter(col("label").isNotNull())
@@ -37,7 +37,7 @@ df_spark = df_spark.filter(col("label").isNotNull())
 # Sampling jika data terlalu besar (opsional, untuk mempercepat dev)
 # df_spark = df_spark.limit(500000)
 
-print(f"✓ Data Source: iceberg_curated.claim_training_set")
+print(f"✓ Data Source: iceberg_curated.claim_feature_set")
 print(f"✓ Total Rows: {df_spark.count():,}")
 
 # Convert to Pandas for Training
