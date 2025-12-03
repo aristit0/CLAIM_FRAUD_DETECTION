@@ -3,261 +3,412 @@
 import sys
 import os
 import cml.data_v1 as cmldata
-from pyspark.sql import SparkSession, Window
 from pyspark.sql import functions as F
-from pyspark.sql.types import DoubleType, ArrayType, StringType
 from pyspark.sql.functions import (
-    col, lit, when, year, month, dayofmonth, 
-    count, sum as spark_sum, avg, lag, stddev, 
-    collect_list, size, unix_timestamp, current_timestamp,
-    udf
+    col, lit, when, collect_list, first, year, month, dayofmonth,
+    current_timestamp, size, array, count, sum as spark_sum, avg, stddev
 )
+from pyspark.sql.window import Window
+from pyspark.sql.types import DoubleType, IntegerType
+from pyspark.sql import udf
 
-# ==============================================================================
-# 1. SETUP PATH & IMPORT CONFIG
-# ==============================================================================
-# Menambahkan path project root agar bisa import config.py
+# ================================================================
+# SETUP PATH (HANDLING INTERACTIVE VS SCRIPT MODE)
+# ================================================================
 try:
+    # Try using __file__ (if run as a script)
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(current_dir) # Naik 1 level dari folder ETL
+    project_root = os.path.dirname(current_dir) # Go up 1 level (from ETL folder to root)
 except NameError:
-    project_root = os.getcwd() # Fallback untuk interactive mode
+    # If error (meaning running in Jupyter/Session), use getcwd()
+    print("Running in interactive mode (Jupyter/Session)...")
+    project_root = os.getcwd()
+    
+    # Validation: If we are in the ETL folder, go up 1 level
+    if os.path.basename(project_root) == "ETL":
+        project_root = os.path.dirname(project_root)
 
+# Add to system path if not present
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-print(f"Loading config from: {project_root}")
+print(f"✓ Project Root set to: {project_root}")
 
+# Import centralized config
 try:
-    from config import COMPAT_RULES
-    print(f"✓ Berhasil memuat {len(COMPAT_RULES)} aturan diagnosis dari config.py")
-except ImportError:
-    print("✗ CRITICAL: config.py tidak ditemukan. Pastikan file ada di root project.")
+    from config import COMPAT_RULES, COST_THRESHOLDS
+    print("✓ Config loaded successfully")
+except ImportError as e:
+    print(f"✗ Critical Error: Failed to import config.py. Ensure file exists at {project_root}")
+    # Fallback to empty dicts to prevent immediate crash, but logic will fail
+    COMPAT_RULES = {}
+    COST_THRESHOLDS = {}
+
+print("=" * 80)
+print("FRAUD DETECTION ETL - FEATURE ENGINEERING PIPELINE")
+print("=" * 80)
+
+# ================================================================
+# 1. CONNECT TO SPARK
+# ================================================================
+print("\n[1/10] Connecting to Spark...")
+try:
+    conn = cmldata.get_connection("CDP-MSI")
+    spark = conn.get_spark_session()
+    print(f"✓ Spark Application ID: {spark.sparkContext.applicationId}")
+except Exception as e:
+    print(f"✗ Error connecting to Spark: {e}")
     sys.exit(1)
 
-# ==============================================================================
-# 2. SETUP SPARK SESSION
-# ==============================================================================
-print("Initializing Spark Session...")
-conn = cmldata.get_connection("CDP-MSI")
-spark = conn.get_spark_session()
+# ================================================================
+# 2. LOAD RAW TABLES
+# ================================================================
+print("\n[2/10] Loading raw tables from Iceberg...")
+try:
+    hdr = spark.sql("SELECT * FROM iceberg_raw.claim_header_raw")
+    diag = spark.sql("SELECT * FROM iceberg_raw.claim_diagnosis_raw")
+    proc = spark.sql("SELECT * FROM iceberg_raw.claim_procedure_raw")
+    drug = spark.sql("SELECT * FROM iceberg_raw.claim_drug_raw")
+    vit = spark.sql("SELECT * FROM iceberg_raw.claim_vitamin_raw")
+    print(f"✓ Loaded {hdr.count():,} claims")
+except Exception as e:
+    print(f"✗ Error loading tables: {e}")
+    spark.stop()
+    sys.exit(1)
 
-# ==============================================================================
-# 3. LOAD RAW DATA (FROM ICEBERG RAW)
-# ==============================================================================
-# Asumsi: Data dari MySQL sudah masuk ke tabel-tabel ini via CDC
-print("Loading raw data from Iceberg...")
-
-df_header = spark.table("iceberg_raw.claim_header_raw")
-df_diag   = spark.table("iceberg_raw.claim_diagnosis_raw")
-df_proc   = spark.table("iceberg_raw.claim_procedure_raw")
-df_drug   = spark.table("iceberg_raw.claim_drug_raw")
-df_vit    = spark.table("iceberg_raw.claim_vitamin_raw")
-
-# Filter: Hanya ambil klaim yang statusnya sudah final (approved/declined) untuk training
-# Klaim 'pending' tidak punya label ground truth
-df_header = df_header.filter(col("status").isin("approved", "declined"))
-
-# ==============================================================================
-# 4. DATA FLATTENING & AGGREGATION
-# ==============================================================================
-print("Aggregating items per claim...")
-
-# 4.1 Diagnosis Utama
-df_diag_primary = df_diag.filter(col("is_primary") == 1).select(
-    col("claim_id"), 
-    col("icd10_code").alias("icd10_primary")
+# ================================================================
+# 3. PRIMARY DIAGNOSIS
+# ================================================================
+print("\n[3/10] Extracting primary diagnosis...")
+diag_primary = (
+    diag.where(col("is_primary") == 1)
+        .groupBy("claim_id")
+        .agg(
+            first("icd10_code").alias("icd10_primary_code"),
+            first("icd10_description").alias("icd10_primary_desc")
+        )
 )
 
-# 4.2 Prosedur (Array Code & Total Cost)
-df_proc_agg = df_proc.groupBy("claim_id").agg(
-    collect_list("icd9_code").alias("proc_codes"),
-    spark_sum("cost").alias("calc_proc_cost")
+# ================================================================
+# 4. AGGREGATIONS
+# ================================================================
+print("\n[4/10] Aggregating procedures, drugs, vitamins...")
+proc_agg = proc.groupBy("claim_id").agg(
+    collect_list("icd9_code").alias("procedures_icd9_codes"),
+    collect_list("icd9_description").alias("procedures_icd9_descs"),
+    collect_list("cost").alias("procedures_costs")
 )
 
-# 4.3 Obat (Array Code & Total Cost)
-df_drug_agg = df_drug.groupBy("claim_id").agg(
+drug_agg = drug.groupBy("claim_id").agg(
     collect_list("drug_code").alias("drug_codes"),
-    spark_sum("cost").alias("calc_drug_cost")
+    collect_list("drug_name").alias("drug_names"),
+    collect_list("cost").alias("drug_costs")
 )
 
-# 4.4 Vitamin (Array Name & Total Cost)
-df_vit_agg = df_vit.groupBy("claim_id").agg(
-    collect_list("vitamin_name").alias("vit_names"),
-    spark_sum("cost").alias("calc_vit_cost")
+vit_agg = vit.groupBy("claim_id").agg(
+    collect_list("vitamin_name").alias("vitamin_names"),
+    collect_list("cost").alias("vitamin_costs")
 )
 
-# 4.5 Join Semua ke Header
-base_df = df_header.join(df_diag_primary, "claim_id", "left") \
-                   .join(df_proc_agg, "claim_id", "left") \
-                   .join(df_drug_agg, "claim_id", "left") \
-                   .join(df_vit_agg, "claim_id", "left")
+# ================================================================
+# 5. JOIN ALL DATA
+# ================================================================
+print("\n[5/10] Joining all tables...")
+base = (
+    hdr.join(diag_primary, "claim_id", "left")
+       .join(proc_agg, "claim_id", "left")
+       .join(drug_agg, "claim_id", "left")
+       .join(vit_agg, "claim_id", "left")
+)
 
-# 4.6 Fill Null & Casting
-base_df = base_df.fillna(0, subset=["calc_proc_cost", "calc_drug_cost", "calc_vit_cost"]) \
-                 .withColumn("total_claim_amount", col("total_claim_amount").cast("double"))
+# ================================================================
+# 6. BASIC FEATURES (DATE, AGE, FLAGS)
+# ================================================================
+print("\n[6/10] Creating basic features...")
+base = (
+    base.withColumn("patient_age",
+        when(col("patient_dob").isNull(), None)
+        .otherwise(year(col("visit_date")) - year(col("patient_dob")))
+    )
+    .withColumn("visit_year", year("visit_date"))
+    .withColumn("visit_month", month("visit_date"))
+    .withColumn("visit_day", dayofmonth("visit_date"))
+    .withColumn("has_procedure", when(size("procedures_icd9_codes") > 0, 1).otherwise(0))
+    .withColumn("has_drug", when(size("drug_codes") > 0, 1).otherwise(0))
+    .withColumn("has_vitamin", when(size("vitamin_names") > 0, 1).otherwise(0))
+)
 
-# ==============================================================================
-# 5. FEATURE ENGINEERING: CLINICAL COMPATIBILITY (Rule-Based)
-# ==============================================================================
-print("Calculating clinical compatibility scores...")
+# ================================================================
+# 7. CLINICAL COMPATIBILITY CHECKING (KEY FEATURE!)
+# ================================================================
+print("\n[7/10] Checking clinical compatibility...")
 
-# Broadcast rules agar worker nodes punya akses cepat
-rules_bc = spark.sparkContext.broadcast(COMPAT_RULES)
+# Create broadcast variable for COMPAT_RULES
+compat_broadcast = spark.sparkContext.broadcast(COMPAT_RULES)
 
-# UDF (User Defined Function) untuk menghitung skor
-def calculate_clinical_score(diagnosis, items, item_type):
-    """
-    Mengembalikan skor 0.0 (bad) sampai 1.0 (good).
-    0.5 jika diagnosis tidak diketahui atau tidak ada item (netral).
-    """
-    if not diagnosis or not items:
+@udf(returnType=DoubleType())
+def compute_procedure_compatibility(icd10, procedures):
+    """Check if procedures are compatible with diagnosis"""
+    if not icd10 or not procedures:
+        return 0.0
+    
+    rules = compat_broadcast.value.get(icd10)
+    if not rules:
+        return 0.5  # Unknown diagnosis
+    
+    allowed_procedures = rules.get("procedures", [])
+    if not allowed_procedures:
         return 0.5
     
-    # Ambil rule untuk diagnosis ini
-    rule = rules_bc.value.get(diagnosis)
-    if not rule:
-        return 0.5 # Unknown diagnosis
+    # Calculate match ratio
+    matches = sum(1 for p in procedures if p in allowed_procedures)
+    return float(matches) / len(procedures)
+
+@udf(returnType=DoubleType())
+def compute_drug_compatibility(icd10, drugs):
+    """Check if drugs are compatible with diagnosis"""
+    if not icd10 or not drugs:
+        return 0.0
     
-    valid_list = rule.get(item_type, [])
-    if not valid_list:
+    rules = compat_broadcast.value.get(icd10)
+    if not rules:
         return 0.5
-        
-    # Hitung berapa item yang ada di whitelist
-    match_count = sum(1 for x in items if x in valid_list)
     
-    # Hindari pembagian nol
-    if len(items) == 0:
-        return 1.0
-        
-    return float(match_count) / len(items)
+    allowed_drugs = rules.get("drugs", [])
+    if not allowed_drugs:
+        return 0.5
+    
+    matches = sum(1 for d in drugs if d in allowed_drugs)
+    return float(matches) / len(drugs)
 
-# Register UDFs
-udf_score_proc = udf(lambda d, i: calculate_clinical_score(d, i, "procedures"), DoubleType())
-udf_score_drug = udf(lambda d, i: calculate_clinical_score(d, i, "drugs"), DoubleType())
-udf_score_vit  = udf(lambda d, i: calculate_clinical_score(d, i, "vitamins"), DoubleType())
+@udf(returnType=DoubleType())
+def compute_vitamin_compatibility(icd10, vitamins):
+    """Check if vitamins are compatible with diagnosis"""
+    if not icd10 or not vitamins:
+        return 0.0
+    
+    rules = compat_broadcast.value.get(icd10)
+    if not rules:
+        return 0.5
+    
+    allowed_vitamins = rules.get("vitamins", [])
+    if not allowed_vitamins:
+        return 0.5
+    
+    matches = sum(1 for v in vitamins if v in allowed_vitamins)
+    return float(matches) / len(vitamins)
 
-# Apply UDFs
-base_df = base_df.withColumn("score_proc", udf_score_proc("icd10_primary", "proc_codes")) \
-                 .withColumn("score_drug", udf_score_drug("icd10_primary", "drug_codes")) \
-                 .withColumn("score_vit",  udf_score_vit("icd10_primary", "vit_names"))
-
-# ==============================================================================
-# 6. FEATURE ENGINEERING: PATIENT HISTORY (Window Functions)
-# ==============================================================================
-print("Generating historical features (Windowing)...")
-
-# Window: Partisi per Pasien, Urutkan berdasarkan Waktu Kunjungan
-# Penting untuk mendeteksi 'Doctor Shopping' atau frekuensi tidak wajar
-w_patient = Window.partitionBy("patient_nik").orderBy(col("visit_date").cast("timestamp").cast("long"))
-
-# Window 30 Hari (86400 detik * 30)
-# Range antara -30 hari sampai -1 detik (tidak termasuk baris saat ini agar tidak bocor/leakage)
-w_30d = w_patient.rangeBetween(-30 * 86400, -1)
-
-base_df = base_df.withColumn("visit_ts", col("visit_date").cast("timestamp").cast("long"))
-
-base_df = base_df.withColumn(
-    "patient_visit_last_30d", 
-    count("claim_id").over(w_30d)
-).withColumn(
-    "patient_amount_last_30d", 
-    spark_sum("total_claim_amount").over(w_30d)
-).withColumn(
-    "prev_visit_ts", 
-    lag("visit_ts", 1).over(w_patient)
-).withColumn(
-    "days_since_last_visit",
-    (col("visit_ts") - col("prev_visit_ts")) / 86400
+# Apply compatibility checks
+base = base.withColumn(
+    "diagnosis_procedure_score",
+    compute_procedure_compatibility(col("icd10_primary_code"), col("procedures_icd9_codes"))
 )
 
-# Bersihkan null values hasil windowing
-base_df = base_df.fillna(0, subset=["patient_visit_last_30d", "patient_amount_last_30d"]) \
-                 .fillna(999, subset=["days_since_last_visit"]) # 999 artinya kunjungan pertama
-
-# ==============================================================================
-# 7. FEATURE ENGINEERING: PROVIDER PROFILING (Statistical Z-Score)
-# ==============================================================================
-print("Generating cost anomaly features (Z-Score)...")
-
-# Kita ingin tahu: "Apakah klaim ini jauh lebih mahal dari rata-rata klaim 
-# dengan diagnosis yang sama?"
-w_diagnosis = Window.partitionBy("icd10_primary")
-
-base_df = base_df.withColumn("avg_cost_diagnosis", avg("total_claim_amount").over(w_diagnosis)) \
-                 .withColumn("std_cost_diagnosis", stddev("total_claim_amount").over(w_diagnosis))
-
-# Hitung Z-Score: (Value - Mean) / StdDev
-# Tambahkan epsilon (0.01) untuk menghindari pembagian dengan nol
-base_df = base_df.withColumn(
-    "cost_z_score", 
-    (col("total_claim_amount") - col("avg_cost_diagnosis")) / (col("std_cost_diagnosis") + 0.01)
+base = base.withColumn(
+    "diagnosis_drug_score",
+    compute_drug_compatibility(col("icd10_primary_code"), col("drug_codes"))
 )
 
-# Handle null Z-score (jika hanya ada 1 data untuk diagnosis tsb)
-base_df = base_df.fillna(0, subset=["cost_z_score"])
+base = base.withColumn(
+    "diagnosis_vitamin_score",
+    compute_vitamin_compatibility(col("icd10_primary_code"), col("vitamin_names"))
+)
 
-# ==============================================================================
-# 8. LABELING & CLEANUP
-# ==============================================================================
-print("Finalizing dataset...")
+# ================================================================
+# 8. MISMATCH FLAGS (BINARY INDICATORS)
+# ================================================================
+print("\n[8/10] Creating mismatch flags...")
+base = base.withColumn(
+    "procedure_mismatch_flag",
+    when(col("diagnosis_procedure_score") < 0.5, 1).otherwise(0)
+)
 
-# Buat Label Target: 1 = Fraud (Declined), 0 = Normal (Approved)
-base_df = base_df.withColumn("label", when(col("status") == "declined", 1).otherwise(0))
+base = base.withColumn(
+    "drug_mismatch_flag",
+    when(col("diagnosis_drug_score") < 0.5, 1).otherwise(0)
+)
 
-# Ekstrak fitur waktu tambahan
-base_df = base_df.withColumn("visit_year", year("visit_date")) \
-                 .withColumn("visit_month", month("visit_date")) \
-                 .withColumn("visit_day", dayofmonth("visit_date"))
+base = base.withColumn(
+    "vitamin_mismatch_flag",
+    when(col("diagnosis_vitamin_score") < 0.5, 1).otherwise(0)
+)
 
-# Pilih kolom final untuk Training
+base = base.withColumn(
+    "mismatch_count",
+    col("procedure_mismatch_flag") + col("drug_mismatch_flag") + col("vitamin_mismatch_flag")
+)
+
+# ================================================================
+# 9. COST ANOMALY DETECTION (STATISTICAL)
+# ================================================================
+print("\n[9/10] Detecting cost anomalies...")
+
+# Calculate z-score for costs per diagnosis
+diagnosis_window = Window.partitionBy("icd10_primary_code")
+
+base = base.withColumn(
+    "diagnosis_avg_cost",
+    avg("total_claim_amount").over(diagnosis_window)
+).withColumn(
+    "diagnosis_stddev_cost",
+    stddev("total_claim_amount").over(diagnosis_window)
+).withColumn(
+    "cost_zscore",
+    (col("total_claim_amount") - col("diagnosis_avg_cost")) /
+    when(col("diagnosis_stddev_cost") == 0, 1).otherwise(col("diagnosis_stddev_cost"))
+).withColumn(
+    "biaya_anomaly_score",
+    when(col("cost_zscore") > 3, 4)      # Extreme outlier
+    .when(col("cost_zscore") > 2, 3)     # High outlier
+    .when(col("cost_zscore") > 1, 2)     # Moderate
+    .otherwise(1)                         # Normal
+)
+
+# Drop intermediate columns
+base = base.drop("diagnosis_avg_cost", "diagnosis_stddev_cost", "cost_zscore")
+
+# ================================================================
+# 10. PATIENT FREQUENCY RISK
+# ================================================================
+print("\n[10/10] Calculating patient frequency...")
+patient_freq = base.groupBy("patient_nik").agg(
+    count("claim_id").alias("patient_frequency_risk")
+)
+
+base = base.join(patient_freq, "patient_nik", "left")
+
+# ================================================================
+# 11. FINAL LABEL (GROUND TRUTH)
+# ================================================================
+print("\nCreating final labels...")
+
+# Human label from approval status
+base = base.withColumn(
+    "human_label",
+    when(col("status") == "declined", 1)
+    .when(col("status") == "approved", 0)
+    .otherwise(None)
+)
+
+# Rule-based flag
+base = base.withColumn(
+    "rule_violation_flag",
+    when(col("mismatch_count") > 0, 1)
+    .when(col("biaya_anomaly_score") >= 3, 1)
+    .when(col("patient_frequency_risk") > 10, 1)
+    .otherwise(0)
+)
+
+# Final label: prioritize human label, fallback to rules
+base = base.withColumn(
+    "final_label",
+    when(col("human_label").isNotNull(), col("human_label"))
+    .otherwise(col("rule_violation_flag"))
+)
+
+# ================================================================
+# 12. SELECT FINAL FEATURES
+# ================================================================
+base = base.withColumn("created_at", current_timestamp())
+
 final_columns = [
-    # ID & Metadata
-    "claim_id", "visit_date", "patient_nik", "doctor_name", "department", 
-    "icd10_primary", "status",
+    # Identifiers
+    "claim_id",
+    "patient_nik",
+    "patient_name",
+    "patient_gender",
+    "patient_dob",
+    "patient_age",
     
-    # Numeric Features (Cost & Age)
-    "patient_age", "total_claim_amount", 
-    "calc_proc_cost", "calc_drug_cost", "calc_vit_cost",
+    # Visit info
+    "visit_date",
+    "visit_year",
+    "visit_month",
+    "visit_day",
+    "visit_type",
+    "doctor_name",
+    "department",
     
-    # Clinical Scores (Feature Utama)
-    "score_proc", "score_drug", "score_vit",
+    # Diagnosis
+    "icd10_primary_code",
+    "icd10_primary_desc",
     
-    # History Features (Advanced)
-    "patient_visit_last_30d", "patient_amount_last_30d", "days_since_last_visit",
+    # Raw arrays (for reference)
+    "procedures_icd9_codes",
+    "procedures_icd9_descs",
+    "drug_codes",
+    "drug_names",
+    "vitamin_names",
     
-    # Profiling Features (Statistical)
-    "cost_z_score",
+    # Costs
+    "total_procedure_cost",
+    "total_drug_cost",
+    "total_vitamin_cost",
+    "total_claim_amount",
     
-    # Target Variable
-    "label",
+    # Clinical compatibility scores
+    "diagnosis_procedure_score",
+    "diagnosis_drug_score",
+    "diagnosis_vitamin_score",
     
-    # Partitioning Columns
-    "visit_year", "visit_month"
+    # Mismatch flags
+    "procedure_mismatch_flag",
+    "drug_mismatch_flag",
+    "vitamin_mismatch_flag",
+    "mismatch_count",
+    
+    # Risk features
+    "patient_frequency_risk",
+    "biaya_anomaly_score",
+    
+    # Labels
+    "rule_violation_flag",
+    "human_label",
+    "final_label",
+    "created_at"
 ]
 
-# Pastikan kolom doctor_name dan department tidak null (penting untuk categorical encoding nanti)
-df_final = base_df.fillna("UNKNOWN", subset=["doctor_name", "department", "icd10_primary"]) \
-                  .select(final_columns)
+feature_df = base.select(*final_columns)
 
-# ==============================================================================
-# 9. WRITE TO ICEBERG CURATED
-# ==============================================================================
-target_table = "iceberg_curated.claim_training_set"
-print(f"Writing result to {target_table}...")
-
-# Pastikan database ada
-spark.sql("CREATE DATABASE IF NOT EXISTS iceberg_curated")
-
-# Tulis data
-# Menggunakan dynamic partitioning berdasarkan tahun dan bulan agar efisien
-df_final.write \
-    .format("iceberg") \
-    .mode("overwrite") \
+# ================================================================
+# 13. SAVE TO ICEBERG
+# ================================================================
+print("\nSaving to Iceberg curated table...")
+feature_df.write.format("iceberg") \
     .partitionBy("visit_year", "visit_month") \
-    .saveAsTable(target_table)
+    .mode("overwrite") \
+    .saveAsTable("iceberg_curated.claim_feature_set")
 
-print(f"✓ ETL Selesai. Data siap digunakan untuk training di: {target_table}")
-print(f"✓ Total data processed: {df_final.count()}")
+# ================================================================
+# 14. DATA QUALITY REPORT
+# ================================================================
+print("\n" + "=" * 80)
+print("ETL COMPLETE - DATA QUALITY REPORT")
+print("=" * 80)
+
+total_claims = feature_df.count()
+fraud_count = feature_df.filter(col("final_label") == 1).count()
+non_fraud_count = total_claims - fraud_count
+
+print(f"Total claims processed: {total_claims:,}")
+if total_claims > 0:
+    print(f"Fraud claims: {fraud_count:,} ({fraud_count/total_claims*100:.1f}%)")
+    print(f"Non-fraud claims: {non_fraud_count:,} ({non_fraud_count/total_claims*100:.1f}%)")
+else:
+    print("No claims processed.")
+
+print("\nMismatch distribution:")
+mismatch_dist = feature_df.groupBy("mismatch_count").count().orderBy("mismatch_count").collect()
+for row in mismatch_dist:
+    print(f"  {row['mismatch_count']} mismatches: {row['count']:,} claims")
+
+print("\nCost anomaly distribution:")
+anomaly_dist = feature_df.groupBy("biaya_anomaly_score").count().orderBy("biaya_anomaly_score").collect()
+for row in anomaly_dist:
+    print(f"  Score {row['biaya_anomaly_score']}: {row['count']:,} claims")
+
+print("\n" + "=" * 80)
+print("Feature set ready for training at: iceberg_curated.claim_feature_set")
+print("=" * 80)
 
 spark.stop()
