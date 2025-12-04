@@ -820,14 +820,16 @@ dept_fraud = feature_df.groupBy("department") \
 for row in dept_fraud:
     print(f"  {row['department']}: {row['fraud_rate']:.1f}% ({row['fraud']}/{row['total']})")
 
-# Data quality issues
+# Data quality issues & Sample size validation (fixed duplicated blocks & NameError)
 print(f"\n⚠️  Data Quality Issues Detected:")
-print(f"  Suspicious duplicates: {feature_df.filter(col('suspicious_duplicate_flag')==1).count():,}")
-print(f"  Suspicious frequency: {feature_df.filter(col('suspicious_frequency_flag')==1).count():,}")
+suspicious_dup_count = feature_df.filter(col("suspicious_duplicate_flag") == 1).count()
+suspicious_freq_count = feature_df.filter(col("suspicious_frequency_flag") == 1).count()
+print(f"  Suspicious duplicates: {suspicious_dup_count:,}")
+print(f"  Suspicious frequency: {suspicious_freq_count:,}")
 print(f"  Missing diagnosis (filled): {missing_diagnosis:,}")
 print(f"  Duplicate claims (removed): {duplicates_removed:,}")
 
-# Sample size validation
+# Sample size validation (fixed NameError 'small')
 print(f"\n📈 Cost Anomaly Sample Size Validation:")
 small_sample = feature_df.filter(col("dx_sample_size") < 30).count()
 large_sample = feature_df.filter(col("dx_sample_size") >= 30).count()
@@ -849,13 +851,13 @@ print("\n[Step 19/15 BONUS] Saving ETL metadata...")
 metadata = {
     "etl_timestamp": datetime.now().isoformat(),
     "total_claims": int(total_processed),
-    "fraud_ratio": float(fraud_count / total_processed),
+    "fraud_ratio": float(fraud_count / total_processed) if total_processed > 0 else 0.0,
     "temporal_split_date": str(split_date),
     "data_quality": {
         "duplicates_removed": int(duplicates_removed),
         "missing_diagnosis": int(missing_diagnosis),
-        "suspicious_duplicates": int(feature_df.filter(col('suspicious_duplicate_flag')==1).count()),
-        "suspicious_frequency": int(feature_df.filter(col('suspicious_frequency_flag')==1).count()),
+        "suspicious_duplicates": int(suspicious_dup_count),
+        "suspicious_frequency": int(suspicious_freq_count),
     },
     "feature_counts": {
         "numeric": 16,
