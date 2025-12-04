@@ -175,7 +175,7 @@ for col_name in numeric_cols:
 print("✓ Data quality checks complete")
 
 # ================================================================
-# 6. TEMPORAL TRAIN/TEST SPLIT
+# 6. TEMPORAL TRAIN/TEST SPLIT (FIXED)
 # ================================================================
 print("\n[Step 6/20] Creating temporal train/test split...")
 
@@ -183,19 +183,33 @@ print("\n[Step 6/20] Creating temporal train/test split...")
 df_train = df[df['temporal_split'] == 'train'].copy()
 df_test = df[df['temporal_split'] == 'test'].copy()
 
+# Convert visit_date to datetime (handle any type issues)
+df_train['visit_date'] = pd.to_datetime(df_train['visit_date'], errors='coerce')
+df_test['visit_date'] = pd.to_datetime(df_test['visit_date'], errors='coerce')
+
+# Remove rows with invalid dates
+df_train = df_train[df_train['visit_date'].notna()]
+df_test = df_test[df_test['visit_date'].notna()]
+
 print(f"✓ Train set: {len(df_train):,} samples")
-print(f"  Date range: {df_train['visit_date'].min()} to {df_train['visit_date'].max()}")
+print(f"  Date range: {df_train['visit_date'].min().date()} to {df_train['visit_date'].max().date()}")
 print(f"  Fraud: {df_train[label_col].sum():,} ({df_train[label_col].mean()*100:.1f}%)")
 
 print(f"✓ Test set: {len(df_test):,} samples")
-print(f"  Date range: {df_test['visit_date'].min()} to {df_test['visit_date'].max()}")
+print(f"  Date range: {df_test['visit_date'].min().date()} to {df_test['visit_date'].max().date()}")
 print(f"  Fraud: {df_test[label_col].sum():,} ({df_test[label_col].mean()*100:.1f}%)")
 
-# Verify no temporal leakage
-if df_train['visit_date'].max() >= df_test['visit_date'].min():
-    print("  ⚠ WARNING: Potential temporal leakage detected!")
+# Verify no temporal leakage (FIXED)
+train_max = df_train['visit_date'].max()
+test_min = df_test['visit_date'].min()
+
+if pd.notna(train_max) and pd.notna(test_min):
+    if train_max >= test_min:
+        print("  ⚠ WARNING: Potential temporal leakage detected!")
+    else:
+        print("  ✓ No temporal leakage - train dates < test dates")
 else:
-    print("  ✓ No temporal leakage - train dates < test dates")
+    print("  ⚠ WARNING: Could not verify temporal split (missing dates)")
 
 # ================================================================
 # 7. LABEL DISTRIBUTION ANALYSIS
