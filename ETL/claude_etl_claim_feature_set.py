@@ -571,6 +571,8 @@ print("✓ Data types cast successfully")
 # ================================================================
 print("\n[Step 16/15 BONUS] Creating temporal train/test split...")
 
+from datetime import timedelta
+
 # Get date range for split
 date_range = feature_df.agg(
     spark_min("visit_date").alias("min_date"),
@@ -580,14 +582,15 @@ date_range = feature_df.agg(
 min_date = date_range['min_date']
 max_date = date_range['max_date']
 
-# Calculate 80/20 split date
-from datetime import timedelta
+print(f"  Data date range: {min_date} to {max_date}")
+print(f"  Total span: {(max_date - min_date).days} days")
+
+# Calculate 80/20 split date (temporal, no data leakage)
 total_days = (max_date - min_date).days
 split_days = int(total_days * 0.8)
 split_date = min_date + timedelta(days=split_days)
 
-print(f"  Date range: {min_date} to {max_date}")
-print(f"  Split date: {split_date}")
+print(f"  Calculated split date: {split_date}")
 print(f"  Train period: {min_date} to {split_date}")
 print(f"  Test period: {split_date} to {max_date}")
 
@@ -597,11 +600,40 @@ feature_df = feature_df.withColumn(
     when(col("visit_date") <= lit(split_date), "train").otherwise("test")
 )
 
-split_counts = feature_df.groupBy("temporal_split").count().collect()
-for row in split_counts:
-    print(f"  {row['temporal_split'].upper()} set: {row['count']:,} claims")
+# Validate split
+split_stats = feature_df.groupBy("temporal_split").agg(
+    count("*").alias("total"),
+    spark_min("visit_date").alias("min_visit"),
+    spark_max("visit_date").alias("max_visit"),
+    spark_sum(col("final_label")).alias("fraud_count")
+).collect()
 
-print("✓ Temporal split indicator added")
+print(f"\n  ✓ Split validation:")
+for row in split_stats:
+    split_name = row['temporal_split'].upper()
+    total = row['total']
+    fraud_count_split = row['fraud_count']
+    fraud_pct = (fraud_count_split / total * 100) if total > 0 else 0
+    min_visit = row['min_visit']
+    max_visit = row['max_visit']
+    
+    print(f"    {split_name}:")
+    print(f"      Records: {total:,}")
+    print(f"      Fraud: {fraud_count_split:,} ({fraud_pct:.1f}%)")
+    print(f"      Date range: {min_visit} to {max_visit}")
+
+# Verify no data leakage
+train_max = feature_df.filter(col("temporal_split") == "train").agg(spark_max("visit_date")).collect()[0][0]
+test_min = feature_df.filter(col("temporal_split") == "test").agg(spark_min("visit_date")).collect()[0][0]
+
+if train_max < test_min:
+    print(f"\n  ✓ NO DATA LEAKAGE: Train max ({train_max}) < Test min ({test_min})")
+    print(f"    Gap between splits: {(test_min - train_max).days} days")
+else:
+    print(f"\n  ✗ WARNING: DATA LEAKAGE DETECTED!")
+    print(f"    Train max ({train_max}) >= Test min ({test_min})")
+
+print("✓ Temporal split indicator added with validation")
 
 # ================================================================
 # 17. SAVE TO ICEBERG
