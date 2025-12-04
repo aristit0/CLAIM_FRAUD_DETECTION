@@ -447,10 +447,12 @@ def insert_claim_to_db(cursor, claim_data):
         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
     
+
     vals_header = (
         p["nik"], p["name"], p["gender"], p["dob"],
         p["address"], p["phone"],
-        claim_data["visit_date"], "rawat jalan", d["name"], dept,
+        claim_data["visit_date"].strftime("%Y-%m-%d"),   
+        "rawat jalan", d["name"], dept,
         items["proc_cost"], items["drug_cost"], items["vit_cost"],
         claim_data["total_cost"], claim_data["status"]
     )
