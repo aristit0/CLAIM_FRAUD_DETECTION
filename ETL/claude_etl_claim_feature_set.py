@@ -511,14 +511,14 @@ for row in label_dist:
 print("✓ Ground truth labels created")
 
 # ================================================================
-# 15. SELECT FINAL FEATURES (FIX DATA TYPES)
+# 15. SELECT FINAL FEATURES WITH EXPLICIT CASTING
 # ================================================================
-print("\n[Step 15/15] Selecting final features with explicit casting...")
+print("\n[Step 15/15] Selecting final feature set with data type casting...")
 
 base = base.withColumn("created_at", current_timestamp())
 
 feature_df = base.select(
-    col("claim_id").cast("bigint"),  
+    col("claim_id").cast("bigint"),
     col("patient_nik").cast("string"),
     col("patient_name").cast("string"),
     col("patient_gender").cast("string"),
@@ -549,13 +549,13 @@ feature_df = base.select(
     col("drug_mismatch_flag").cast("int"),
     col("vitamin_mismatch_flag").cast("int"),
     col("mismatch_count").cast("int"),
-    col("patient_frequency_risk").cast("bigint"),   
+    col("patient_frequency_risk").cast("bigint"),
     when(col("days_since_last_claim").isNull(), lit(None))
         .otherwise(col("days_since_last_claim")).cast("int").alias("days_since_last_claim"),
     col("suspicious_frequency_flag").cast("int"),
     col("suspicious_duplicate_flag").cast("int"),
     col("suspicious_duplicate_count").cast("int"),
-    col("dx_sample_size").cast("bigint"),   
+    col("dx_sample_size").cast("int"),
     col("biaya_anomaly_score").cast("int"),
     col("rule_violation_flag").cast("int"),
     col("human_label").cast("int"),
@@ -566,7 +566,7 @@ feature_df = base.select(
 
 print("✓ Data types cast successfully")
 
-# ================================================================
+## ================================================================
 # 16. TEMPORAL VALIDATION SPLIT
 # ================================================================
 print("\n[Step 16/15 BONUS] Creating temporal train/test split...")
@@ -650,6 +650,96 @@ feature_df.write.format("iceberg") \
     .saveAsTable("iceberg_curated.claim_feature_set")
 
 print("✓ Feature set saved to: iceberg_curated.claim_feature_set")
+
+# ================================================================
+# 18. DATA QUALITY REPORT
+# ================================================================
+print("\n" + "=" * 80)
+print("ETL COMPLETE - COMPREHENSIVE DATA QUALITY REPORT")
+print("=" * 80)
+
+feature_df.cache()
+
+total_processed = feature_df.count()
+fraud_count = feature_df.filter(col("final_label") == 1).count()
+non_fraud_count = total_processed - fraud_count
+
+print(f"\n📊 Dataset Statistics:")
+print(f"  Total claims processed: {total_processed:,}")
+print(f"  Fraud claims: {fraud_count:,} ({fraud_count/total_processed*100:.1f}%)")
+print(f"  Legitimate claims: {non_fraud_count:,} ({non_fraud_count/total_processed*100:.1f}%)")
+
+# Label source distribution
+human_labeled = feature_df.filter(col("human_label").isNotNull()).count()
+rule_labeled = total_processed - human_labeled
+
+print(f"\n📋 Label Source Distribution:")
+print(f"  Human reviewed: {human_labeled:,} ({human_labeled/total_processed*100:.1f}%)")
+print(f"  Rule-based only: {rule_labeled:,} ({rule_labeled/total_processed*100:.1f}%)")
+
+# Temporal split distribution
+print(f"\n📅 Temporal Split Distribution:")
+split_stats = feature_df.groupBy("temporal_split").agg(
+    count("*").alias("total"),
+    spark_sum(col("final_label")).alias("fraud")
+).collect()
+
+for row in split_stats:
+    split_name = row['temporal_split'].upper()
+    total = row['total']
+    fraud = row['fraud']
+    fraud_pct = fraud / total * 100 if total > 0 else 0
+    print(f"  {split_name}: {total:,} claims, {fraud:,} fraud ({fraud_pct:.1f}%)")
+
+# Clinical mismatch distribution
+print(f"\n🚨 Clinical Mismatch Distribution:")
+mismatch_dist = feature_df.groupBy("mismatch_count").count().orderBy("mismatch_count").collect()
+for row in mismatch_dist:
+    pct = row['count'] / total_processed * 100
+    print(f"  {row['mismatch_count']} mismatches: {row['count']:,} ({pct:.1f}%)")
+
+# Cost anomaly distribution
+print(f"\n💰 Cost Anomaly Distribution:")
+anomaly_dist = feature_df.groupBy("biaya_anomaly_score").count().orderBy("biaya_anomaly_score").collect()
+anomaly_labels = ["", "Normal", "Moderate", "High", "Extreme"]
+for row in anomaly_dist:
+    pct = row['count'] / total_processed * 100
+    severity = anomaly_labels[int(row['biaya_anomaly_score'])]
+    print(f"  Level {row['biaya_anomaly_score']} ({severity}): {row['count']:,} ({pct:.1f}%)")
+
+# Top 10 diagnoses
+print(f"\n🏥 Top 10 Diagnoses:")
+top_dx = feature_df.groupBy("icd10_primary_code", "icd10_primary_desc") \
+                   .count() \
+                   .orderBy(col("count").desc()) \
+                   .limit(10) \
+                   .collect()
+for row in top_dx:
+    print(f"  {row['icd10_primary_code']}: {row['icd10_primary_desc']} - {row['count']:,} claims")
+
+# Fraud rate by department
+print(f"\n🏢 Fraud Rate by Department:")
+dept_fraud = feature_df.groupBy("department") \
+                       .agg(
+                           count("*").alias("total"),
+                           spark_sum(col("final_label")).alias("fraud")
+                       ) \
+                       .withColumn("fraud_rate", col("fraud") / col("total") * 100) \
+                       .orderBy(col("fraud_rate").desc()) \
+                       .collect()
+for row in dept_fraud:
+    print(f"  {row['department']}: {row['fraud_rate']:.1f}% ({row['fraud']}/{row['total']})")
+
+# Data quality issues
+print(f"\n⚠️  Data Quality Issues Detected:")
+print(f"  Suspicious duplicates: {feature_df.filter(col('suspicious_duplicate_flag')==1).count():,}")
+print(f"  Suspicious frequency: {feature_df.filter(col('suspicious_frequency_flag')==1).count():,}")
+print(f"  Missing diagnosis (filled): {missing_diagnosis:,}")
+print(f"  Duplicate claims (removed): {duplicates_removed:,}")
+
+# Sample size validation
+print(f"\n📈 Cost Anomaly Sample Size Validation:")
+small
 
 # ================================================================
 # 18. DATA QUALITY REPORT
