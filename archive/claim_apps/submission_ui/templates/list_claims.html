@@ -1,0 +1,53 @@
+{% extends "layout.html" %}
+{% block content %}
+
+<h4 class="mb-3">Daftar Claim</h4>
+
+<table class="table table-bordered table-striped">
+    <thead class="table-dark">
+        <tr>
+            <th>Claim ID</th>
+            <th>Nama Pasien</th>
+            <th>NIK</th>
+            <th>Total Klaim</th>
+            <th>Status</th>
+            <th>Dibuat</th>
+        </tr>
+    </thead>
+
+    <tbody>
+        {% for c in claims %}
+        <tr>
+            <td>{{ c.claim_id }}</td>
+            <td>{{ c.patient_name }}</td>
+            <td>{{ c.patient_nik }}</td>
+            <td>{{ c.total_claim_amount | rupiah }}</td>
+            <td>{{ c.status }}</td>
+            <td>{{ c.created_at }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+<!-- Pagination -->
+<nav>
+  <ul class="pagination justify-content-center">
+
+    <li class="page-item {% if page == 1 %}disabled{% endif %}">
+      <a class="page-link" href="?page={{ page - 1 }}">Previous</a>
+    </li>
+
+    {% for p in range(1, total_pages + 1) %}
+    <li class="page-item {% if p == page %}active{% endif %}">
+      <a class="page-link" href="?page={{ p }}">{{ p }}</a>
+    </li>
+    {% endfor %}
+
+    <li class="page-item {% if page == total_pages %}disabled{% endif %}">
+      <a class="page-link" href="?page={{ page + 1 }}">Next</a>
+    </li>
+
+  </ul>
+</nav>
+
+{% endblock %}

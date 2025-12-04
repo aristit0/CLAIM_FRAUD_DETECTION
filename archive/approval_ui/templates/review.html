@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Claim Review - {{ header.claim_id }}</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    
+    <style>
+        .risk-high { background: linear-gradient(135deg, #dc2626 0%, #991b1b 100%); }
+        .risk-moderate { background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); }
+        .risk-low { background: linear-gradient(135deg, #10b981 0%, #059669 100%); }
+        .risk-minimal { background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); }
+        
+        .metric-card {
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .progress-bar {
+            transition: width 0.5s ease;
+        }
+        
+        .compatibility-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+    </style>
+
+    <script>
+        async function updateStatus(claimId, status) {
+            const confirmMsg = {
+                'approved': '✓ Approve klaim ini?',
+                'declined': '✗ Decline klaim ini?',
+                'manual_review': '👁 Tandai untuk manual review?',
+                'approved_partial': '⚡ Approve sebagian?',
+                'request_docs': '📄 Request dokumen tambahan?'
+            }[status] || `Set status ke ${status}?`;
+            
+            if (!confirm(confirmMsg)) return;
+
+            try {
+                const res = await fetch(`/api/update_status/${claimId}`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ status })
+                });
+
+                const data = await res.json();
+                
+                if (data.success) {
+                    alert("✓ Status berhasil diupdate!");
+                    window.location.href = "/dashboard";
+                } else {
+                    alert("✗ Error: " + (data.error || "Unknown error"));
+                }
+            } catch (error) {
+                alert("✗ Connection error: " + error.message);
+            }
+        }
+    </script>
+</head>
+
+<body class="bg-gray-900 text-white min-h-screen">
+
+<div class="max-w-7xl mx-auto py-6 px-4">
+
+    <!-- HEADER -->
+    <div class="flex justify-between items-center mb-6">
+        <div>
+            <a href="/dashboard" class="text-blue-400 hover:underline mb-2 inline-block">&larr; Back to Dashboard</a>
+            <h1 class="text-3xl font-bold">Claim Review #{{ header.claim_id }}</h1>
+        </div>
+        
+        {% set m = scoring.model_output %}
+        {% if m.risk_level %}
+            <div class="px-6 py-3 rounded-lg text-white font-bold text-xl shadow-lg
+                {% if m.risk_level == 'HIGH RISK' %}risk-high
+                {% elif m.risk_level == 'MODERATE RISK' %}risk-moderate
+                {% elif m.risk_level == 'LOW RISK' %}risk-low
+                {% else %}risk-minimal{% endif %}">
+                {{ m.risk_level }}
+            </div>
+        {% endif %}
+    </div>
+
+    <!-- ========================================== -->
+    <!-- FRAUD ANALYSIS BANNER -->
+    <!-- ========================================== -->
+    {% if m %}
+    <div class="bg-gradient-to-r from-gray-800 to-gray-900 p-6 rounded-xl shadow-2xl mb-6 border border-gray-700">
+        
+        <!-- METRICS ROW -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+            
+            <!-- Fraud Score -->
+            <div class="metric-card bg-gray-800 bg-opacity-50 p-4 rounded-lg text-center">
+                <div class="text-gray-400 text-sm mb-1">Fraud Score</div>
+                <div class="text-4xl font-bold 
+                    {% if m.fraud_score >= 0.8 %}text-red-400
+                    {% elif m.fraud_score >= 0.5 %}text-yellow-400
+                    {% else %}text-green-400{% endif %}">
+                    {{ (m.fraud_score * 100) | round(1) }}%
+                </div>
+                <div class="text-xs text-gray-500 mt-1">{{ m.fraud_probability }}</div>
+            </div>
+            
+            <!-- Confidence -->
+            <div class="metric-card bg-gray-800 bg-opacity-50 p-4 rounded-lg text-center">
+                <div class="text-gray-400 text-sm mb-1">Confidence</div>
+                <div class="text-4xl font-bold text-blue-400">
+                    {{ (m.confidence * 100) | round(1) }}%
+                </div>
+                <div class="text-xs text-gray-500 mt-1">Model certainty</div>
+            </div>
+            
+            <!-- Mismatches -->
+            <div class="metric-card bg-gray-800 bg-opacity-50 p-4 rounded-lg text-center">
+                <div class="text-gray-400 text-sm mb-1">Clinical Mismatches</div>
+                <div class="text-4xl font-bold 
+                    {% if m.features.mismatch_count > 0 %}text-red-400{% else %}text-green-400{% endif %}">
+                    {{ m.features.mismatch_count }}
+                </div>
+                <div class="text-xs text-gray-500 mt-1">Incompatibilities</div>
+            </div>
+            
+            <!-- Cost Anomaly -->
+            <div class="metric-card bg-gray-800 bg-opacity-50 p-4 rounded-lg text-center">
+                <div class="text-gray-400 text-sm mb-1">Cost Anomaly</div>
+                <div class="text-4xl font-bold 
+                    {% if m.features.cost_anomaly >= 3 %}text-red-400
+                    {% elif m.features.cost_anomaly_score >= 2 %}text-yellow-400
+                    {% else %}text-green-400{% endif %}">
+                    {{ m.features.cost_anomaly }}/4
+                </div>
+                <div class="text-xs text-gray-500 mt-1">Severity level</div>
+            </div>
+        </div>
+
+        <!-- CLINICAL COMPATIBILITY -->
+        <div class="bg-gray-800 bg-opacity-30 p-4 rounded-lg mb-4">
+            <h3 class="font-semibold mb-3 text-gray-300">Clinical Compatibility Check</h3>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {% set clinical = m.clinical_compatibility %}
+                
+                <div class="flex items-center space-x-2">
+                    <span class="compatibility-dot {% if clinical.procedure_compatible %}bg-green-500{% else %}bg-red-500{% endif %}"></span>
+                    <span class="text-sm">Procedure: 
+                        <span class="font-semibold {% if clinical.procedure_compatible %}text-green-400{% else %}text-red-400{% endif %}">
+                            {% if clinical.procedure_compatible %}Compatible{% else %}Incompatible{% endif %}
+                        </span>
+                    </span>
+                </div>
+                
+                <div class="flex items-center space-x-2">
+                    <span class="compatibility-dot {% if clinical.drug_compatible %}bg-green-500{% else %}bg-red-500{% endif %}"></span>
+                    <span class="text-sm">Drug: 
+                        <span class="font-semibold {% if clinical.drug_compatible %}text-green-400{% else %}text-red-400{% endif %}">
+                            {% if clinical.drug_compatible %}Compatible{% else %}Incompatible{% endif %}
+                        </span>
+                    </span>
+                </div>
+                
+                <div class="flex items-center space-x-2">
+                    <span class="compatibility-dot {% if clinical.vitamin_compatible %}bg-green-500{% else %}bg-red-500{% endif %}"></span>
+                    <span class="text-sm">Vitamin: 
+                        <span class="font-semibold {% if clinical.vitamin_compatible %}text-green-400{% else %}text-red-400{% endif %}">
+                            {% if clinical.vitamin_compatible %}Compatible{% else %}Incompatible{% endif %}
+                        </span>
+                    </span>
+                </div>
+            </div>
+        </div>
+
+        <!-- AI EXPLANATION (HIGHLIGHTED) -->
+        <div class="bg-blue-900 bg-opacity-20 p-4 rounded-lg border border-blue-800 mb-4">
+            <h3 class="font-semibold mb-2 flex items-center">
+                <svg class="w-5 h-5 mr-2 text-blue-400" fill="currentColor" viewBox="0 0 20 20">
+                    <path d="M10 2a6 6 0 00-6 6v3.586l-.707.707A1 1 0 004 14h12a1 1 0 00.707-1.707L16 11.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-3-3h6a3 3 0 01-3 3z"/>
+                </svg>
+                AI Explanation
+            </h3>
+            <p class="text-gray-300 text-sm leading-relaxed">
+                {{ scoring.ai_explanation }}
+            </p>
+        </div>
+
+        <!-- MODEL EXPLANATION -->
+        {% if m.explanation %}
+        <div class="bg-gray-800 bg-opacity-30 p-4 rounded-lg mb-4">
+            <h3 class="font-semibold mb-2 text-gray-300">Model Analysis</h3>
+            <p class="text-sm text-gray-400">{{ m.explanation }}</p>
+        </div>
+        {% endif %}
+
+        <!-- TOP RISK FACTORS -->
+        {% if m.top_risk_factors %}
+        <div class="bg-gray-800 bg-opacity-30 p-4 rounded-lg">
+            <h3 class="font-semibold mb-3 text-gray-300">Top Risk Factors</h3>
+            <div class="space-y-2">
+                {% for factor in m.top_risk_factors[:5] %}
+                <div class="bg-gray-700 bg-opacity-50 p-3 rounded">
+                    <div class="flex justify-between items-center mb-1">
+                        <span class="text-sm font-medium">{{ factor.interpretation }}</span>
+                        <span class="text-xs text-gray-400">Impact: {{ factor.importance | round(1) }}</span>
+                    </div>
+                    {% set max_importance = m.top_risk_factors[0].importance %}
+                    {% set percentage = (factor.importance / max_importance * 100) | round(1) %}
+                    <div class="w-full bg-gray-800 h-2 rounded-full overflow-hidden">
+                        <div class="progress-bar bg-gradient-to-r from-red-500 to-red-600 h-2" style="width: {{ percentage }}%"></div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    <!-- ========================================== -->
+    <!-- PATIENT & VISIT INFO -->
+    <!-- ========================================== -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+        
+        <!-- PATIENT INFO -->
+        <div class="bg-gray-800 p-6 rounded-xl shadow">
+            <h2 class="text-xl font-semibold mb-4 border-b border-gray-700 pb-2">Patient Information</h2>
+            <div class="space-y-3 text-sm">
+                <div class="flex justify-between">
+                    <span class="text-gray-400">Name:</span>
+                    <span class="font-medium">{{ header.patient_name }}</span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-gray-400">NIK:</span>
+                    <span class="font-mono text-blue-400">{{ header.patient_nik }}</span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-gray-400">Gender:</span>
+                    <span>{{ header.patient_gender }}</span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-gray-400">Date of Birth:</span>
+                    <span>{{ header.patient_dob }}</span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-gray-400">Phone:</span>
+                    <span>{{ header.patient_phone }}</span>
+                </div>
+                <div class="pt-2 border-t border-gray-700">
+                    <span class="text-gray-400">Address:</span>
+                    <p class="text-sm text-gray-300 mt-1">{{ header.patient_address }}</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- VISIT INFO -->
+        <div class="bg-gray-800 p-6 rounded-xl shadow">
+            <h2 class="text-xl font-semibold mb-4 border-b border-gray-700 pb-2">Visit Information</h2>
+            <div class="space-y-3 text-sm">
+                <div class="flex justify-between">
+                    <span class="text-gray-400">Visit Date:</span>
+                    <span class="font-medium">{{ header.visit_date }}</span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-gray-400">Visit Type:</span>
+                    <span class="px-2 py-1 bg-blue-900 rounded text-xs">{{ header.visit_type }}</span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-gray-400">Department:</span>
+                    <span>{{ header.department }}</span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-gray-400">Attending Doctor:</span>
+                    <span>{{ header.doctor_name }}</span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-gray-400">Current Status:</span>
+                    <span class="px-2 py-1 bg-yellow-700 rounded text-xs font-semibold">{{ header.status }}</span>
+                </div>
+                <div class="pt-3 border-t border-gray-700">
+                    <div class="flex justify-between items-center">
+                        <span class="text-gray-400">Total Claim Amount:</span>
+                        <span class="text-green-400 font-bold text-xl">{{ header.total_claim_amount | rupiah }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- DIAGNOSIS -->
+    <!-- ========================================== -->
+    <div class="bg-gray-800 p-6 rounded-xl shadow mb-6">
+        <h2 class="text-xl font-semibold mb-4 border-b border-gray-700 pb-2">Diagnosis</h2>
+        <table class="w-full">
+            <thead class="text-gray-400 text-sm">
+                <tr class="border-b border-gray-700">
+                    <th class="p-3 text-left">ICD-10 Code</th>
+                    <th class="text-left">Description</th>
+                    <th class="text-left">Type</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for d in diagnosis %}
+                <tr class="border-b border-gray-700 hover:bg-gray-700 hover:bg-opacity-30 transition">
+                    <td class="p-3 font-mono text-blue-400">{{ d.icd10_code }}</td>
+                    <td class="text-gray-300">{{ d.icd10_description }}</td>
+                    <td>
+                        {% if d.is_primary %}
+                        <span class="px-3 py-1 bg-blue-600 rounded-full text-xs font-semibold">Primary</span>
+                        {% else %}
+                        <span class="px-3 py-1 bg-gray-600 rounded-full text-xs">Secondary</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- PROCEDURES, DRUGS, VITAMINS (3 COLUMNS) -->
+    <!-- ========================================== -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+        
+        <!-- PROCEDURES -->
+        <div class="bg-gray-800 p-6 rounded-xl shadow">
+            <h2 class="text-lg font-semibold mb-4 border-b border-gray-700 pb-2 flex items-center">
+                <svg class="w-5 h-5 mr-2 text-blue-400" fill="currentColor" viewBox="0 0 20 20">
+                    <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z"/>
+                    <path fill-rule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd"/>
+                </svg>
+                Procedures
+            </h2>
+            <div class="space-y-2 max-h-96 overflow-y-auto">
+                {% for p in procedures %}
+                <div class="bg-gray-700 bg-opacity-50 p-3 rounded hover:bg-opacity-70 transition">
+                    <div class="font-mono text-sm text-blue-400 font-semibold">{{ p.icd9_code }}</div>
+                    <div class="text-xs text-gray-400 mt-1">{{ p.icd9_description }}</div>
+                    <div class="text-sm text-green-400 mt-2 font-medium">{{ p.cost | rupiah }}</div>
+                </div>
+                {% else %}
+                <div class="text-gray-500 text-sm text-center py-4">No procedures recorded</div>
+                {% endfor %}
+            </div>
+            <div class="mt-4 pt-3 border-t border-gray-700 flex justify-between items-center">
+                <span class="text-gray-400 text-sm">Total:</span>
+                <span class="text-green-400 font-bold text-lg">{{ header.total_procedure_cost | rupiah }}</span>
+            </div>
+        </div>
+
+        <!-- DRUGS -->
+        <div class="bg-gray-800 p-6 rounded-xl shadow">
+            <h2 class="text-lg font-semibold mb-4 border-b border-gray-700 pb-2 flex items-center">
+                <svg class="w-5 h-5 mr-2 text-purple-400" fill="currentColor" viewBox="0 0 20 20">
+                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v2H7a1 1 0 100 2h2v2a1 1 0 102 0v-2h2a1 1 0 100-2h-2V7z" clip-rule="evenodd"/>
+                </svg>
+                Drugs
+            </h2>
+            <div class="space-y-2 max-h-96 overflow-y-auto">
+                {% for d in drugs %}
+                <div class="bg-gray-700 bg-opacity-50 p-3 rounded hover:bg-opacity-70 transition">
+                    <div class="font-mono text-sm text-purple-400 font-semibold">{{ d.drug_code }}</div>
+                    <div class="text-xs text-gray-400 mt-1">{{ d.drug_name }}</div>
+                    <div class="text-sm text-green-400 mt-2 font-medium">{{ d.cost | rupiah }}</div>
+                </div>
+                {% else %}
+                <div class="text-gray-500 text-sm text-center py-4">No drugs prescribed</div>
+                {% endfor %}
+            </div>
+            <div class="mt-4 pt-3 border-t border-gray-700 flex justify-between items-center">
+                <span class="text-gray-400 text-sm">Total:</span>
+                <span class="text-green-400 font-bold text-lg">{{ header.total_drug_cost | rupiah }}</span>
+            </div>
+        </div>
+
+        <!-- VITAMINS -->
+        <div class="bg-gray-800 p-6 rounded-xl shadow">
+            <h2 class="text-lg font-semibold mb-4 border-b border-gray-700 pb-2 flex items-center">
+                <svg class="w-5 h-5 mr-2 text-yellow-400" fill="currentColor" viewBox="0 0 20 20">
+                    <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/>
+                </svg>
+                Vitamins & Supplements
+            </h2>
+            <div class="space-y-2 max-h-96 overflow-y-auto">
+                {% for v in vitamins %}
+                <div class="bg-gray-700 bg-opacity-50 p-3 rounded hover:bg-opacity-70 transition">
+                    <div class="text-sm text-yellow-400 font-semibold">{{ v.vitamin_name }}</div>
+                    <div class="text-sm text-green-400 mt-2 font-medium">{{ v.cost | rupiah }}</div>
+                </div>
+                {% else %}
+                <div class="text-gray-500 text-sm text-center py-4">No vitamins prescribed</div>
+                {% endfor %}
+            </div>
+            <div class="mt-4 pt-3 border-t border-gray-700 flex justify-between items-center">
+                <span class="text-gray-400 text-sm">Total:</span>
+                <span class="text-green-400 font-bold text-lg">{{ header.total_vitamin_cost | rupiah }}</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- ACTION BUTTONS -->
+    <!-- ========================================== -->
+    <div class="bg-gray-800 p-6 rounded-xl shadow sticky bottom-4">
+        <h2 class="text-xl font-semibold mb-4 text-center">Reviewer Decision</h2>
+        
+        <div class="flex flex-wrap justify-center gap-3">
+            <button onclick="updateStatus('{{ header.claim_id }}', 'approved')" 
+                    class="px-6 py-3 bg-green-600 hover:bg-green-700 rounded-lg font-semibold transition shadow-lg hover:shadow-xl transform hover:scale-105">
+                <span class="text-xl">✓</span> Approve
+            </button>
+
+
+            <button onclick="updateStatus('{{ header.claim_id }}', 'declined')" 
+                    class="px-6 py-3 bg-red-600 hover:bg-red-700 rounded-lg font-semibold transition shadow-lg hover:shadow-xl transform hover:scale-105">
+                <span class="text-xl">✗</span> Decline
+            </button>
+
+            <button onclick="updateStatus('{{ header.claim_id }}', 'manual_review')" 
+                    class="px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-semibold transition shadow-lg hover:shadow-xl transform hover:scale-105">
+                <span class="text-xl">👁</span> Manual Review
+            </button>
+
+        </div>
+
+        <p class="text-center text-xs text-gray-500 mt-4">
+            Make sure to review all information carefully before making a decision
+        </p>
+    </div>
+
+</div>
+
+</body>
+</html>

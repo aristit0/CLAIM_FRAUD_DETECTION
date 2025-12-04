@@ -1,0 +1,11 @@
+.bg-dashboard {
+    background-image: url('/static/bg.jpg');
+    background-size: cover;
+    background-position: center;
+    background-attachment: fixed;
+}
+
+.bg-overlay {
+    backdrop-filter: brightness(0.80);
+    min-height: 100vh;
+}
