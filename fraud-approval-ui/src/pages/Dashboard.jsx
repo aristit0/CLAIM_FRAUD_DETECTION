@@ -13,6 +13,7 @@ import {
   FileText,
   Zap,
   Filter,
+  Loader2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -20,7 +21,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { formatRupiah, formatDate, getStatusColor } from '@/lib/utils'
-import { mockClaims } from '@/hooks/useApi'
+import { API_BASE } from '@/config'
 
 const stats = [
   { label: 'Pending Review', value: '127', icon: Clock, color: 'from-amber-500 to-orange-500', trend: '+12%' },
@@ -31,16 +32,34 @@ const stats = [
 
 export default function Dashboard() {
   const navigate = useNavigate()
-  const [claims, setClaims] = useState(mockClaims)
+  const [claims, setClaims] = useState([])
   const [searchQuery, setSearchQuery] = useState('')
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [page, setPage] = useState(1)
+  const [totalPages, setTotalPages] = useState(1)
 
   useEffect(() => {
     const isAuth = localStorage.getItem('isAuthenticated')
     if (!isAuth) {
       navigate('/')
+      return
     }
-  }, [navigate])
+    fetchClaims()
+  }, [navigate, page])
+
+  const fetchClaims = async () => {
+    setLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/claims?page=${page}&limit=20`)
+      const data = await res.json()
+      setClaims(data.claims || [])
+      setTotalPages(data.total_pages || 1)
+    } catch (err) {
+      console.error('Failed to fetch claims:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
 
   const handleLogout = () => {
     localStorage.removeItem('isAuthenticated')
@@ -177,6 +196,14 @@ export default function Dashboard() {
                     </tr>
                   </thead>
                   <tbody>
+                    {loading ? (
+                      <tr>
+                        <td colSpan="8" className="p-12 text-center">
+                          <Loader2 className="w-8 h-8 mx-auto animate-spin text-violet-400" />
+                          <p className="text-muted-foreground mt-2">Loading claims...</p>
+                        </td>
+                      </tr>
+                    ) : (
                     <AnimatePresence>
                       {filteredClaims.map((claim, index) => (
                         <motion.tr
@@ -230,6 +257,7 @@ export default function Dashboard() {
                         </motion.tr>
                       ))}
                     </AnimatePresence>
+                    )}
                   </tbody>
                 </table>
               </div>

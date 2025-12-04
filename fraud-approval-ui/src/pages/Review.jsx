@@ -39,7 +39,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import { formatRupiah, formatDate, getRiskColor, getStatusColor, cn } from '@/lib/utils'
-import { mockClaimDetail } from '@/hooks/useApi'
+import { API_BASE } from '@/config'
 
 const compatibilityItems = [
   { key: 'procedure_compatible', label: 'Procedure', icon: Stethoscope },
@@ -62,20 +62,53 @@ export default function ReviewPage() {
       return
     }
 
-    // Simulate API fetch with mock data
-    setTimeout(() => {
-      setData({ ...mockClaimDetail, claim_id: parseInt(claimId) })
-      setLoading(false)
-    }, 500)
+    // Fetch claim detail from backend
+    const fetchClaim = async () => {
+      try {
+        // Fetch score from scoring backend
+        const scoreRes = await fetch(`${API_BASE}/api/score/${claimId}`)
+        const scoreData = await scoreRes.json()
+        
+        // Fetch claim details
+        const claimRes = await fetch(`${API_BASE}/api/claim/${claimId}`)
+        const claimData = await claimRes.json()
+        
+        setData({
+          claim_id: parseInt(claimId),
+          header: claimData.header || {},
+          model_output: scoreData.model_output || {},
+          ai_explanation: scoreData.ai_explanation,
+          diagnosis: claimData.diagnosis || [],
+          procedures: claimData.procedures || [],
+          drugs: claimData.drugs || [],
+          vitamins: claimData.vitamins || [],
+        })
+      } catch (err) {
+        console.error('Failed to fetch claim:', err)
+      } finally {
+        setLoading(false)
+      }
+    }
+    
+    fetchClaim()
   }, [claimId, navigate])
 
   const handleAction = async (action) => {
     setProcessing(true)
-    // Simulate API call
-    await new Promise((r) => setTimeout(r, 1000))
-    setProcessing(false)
-    setActionDialog({ open: false, action: null })
-    navigate('/dashboard')
+    try {
+      await fetch(`${API_BASE}/api/update_status/${claimId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: action }),
+      })
+      setActionDialog({ open: false, action: null })
+      navigate('/dashboard')
+    } catch (err) {
+      console.error('Failed to update status:', err)
+      alert('Failed to update status')
+    } finally {
+      setProcessing(false)
+    }
   }
 
   const actionConfig = {
