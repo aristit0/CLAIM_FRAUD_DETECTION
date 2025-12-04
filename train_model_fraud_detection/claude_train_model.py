@@ -175,7 +175,7 @@ for col_name in numeric_cols:
 print("✓ Data quality checks complete")
 
 # ================================================================
-# 6. TEMPORAL TRAIN/TEST SPLIT (FIXED)
+# 6. TEMPORAL TRAIN/TEST SPLIT (FIXED v2)
 # ================================================================
 print("\n[Step 6/20] Creating temporal train/test split...")
 
@@ -183,33 +183,36 @@ print("\n[Step 6/20] Creating temporal train/test split...")
 df_train = df[df['temporal_split'] == 'train'].copy()
 df_test = df[df['temporal_split'] == 'test'].copy()
 
-# Convert visit_date to datetime (handle any type issues)
+print(f"✓ Train set: {len(df_train):,} samples (before cleaning)")
+print(f"✓ Test set: {len(df_test):,} samples (before cleaning)")
+
+# Convert visit_date to datetime (but don't drop rows yet)
 df_train['visit_date'] = pd.to_datetime(df_train['visit_date'], errors='coerce')
 df_test['visit_date'] = pd.to_datetime(df_test['visit_date'], errors='coerce')
 
-# Remove rows with invalid dates
-df_train = df_train[df_train['visit_date'].notna()]
-df_test = df_test[df_test['visit_date'].notna()]
-
-print(f"✓ Train set: {len(df_train):,} samples")
-print(f"  Date range: {df_train['visit_date'].min().date()} to {df_train['visit_date'].max().date()}")
-print(f"  Fraud: {df_train[label_col].sum():,} ({df_train[label_col].mean()*100:.1f}%)")
-
-print(f"✓ Test set: {len(df_test):,} samples")
-print(f"  Date range: {df_test['visit_date'].min().date()} to {df_test['visit_date'].max().date()}")
-print(f"  Fraud: {df_test[label_col].sum():,} ({df_test[label_col].mean()*100:.1f}%)")
-
-# Verify no temporal leakage (FIXED)
-train_max = df_train['visit_date'].max()
-test_min = df_test['visit_date'].min()
-
-if pd.notna(train_max) and pd.notna(test_min):
+# Only check dates for validation, don't remove rows
+if df_train['visit_date'].notna().any() and df_test['visit_date'].notna().any():
+    train_max = df_train['visit_date'].max()
+    test_min = df_test['visit_date'].min()
+    print(f"  Train date range: {df_train['visit_date'].min().date()} to {train_max.date()}")
+    print(f"  Test date range: {test_min.date()} to {df_test['visit_date'].max().date()}")
+    
     if train_max >= test_min:
         print("  ⚠ WARNING: Potential temporal leakage detected!")
     else:
         print("  ✓ No temporal leakage - train dates < test dates")
 else:
-    print("  ⚠ WARNING: Could not verify temporal split (missing dates)")
+    print("  ⚠ Using split without date validation")
+
+# Keep all data (don't filter by date)
+print(f"✓ Final train set: {len(df_train):,} samples")
+print(f"  Fraud: {df_train[label_col].sum():,} ({df_train[label_col].mean()*100:.1f}%)")
+print(f"✓ Final test set: {len(df_test):,} samples")
+print(f"  Fraud: {df_test[label_col].sum():,} ({df_test[label_col].mean()*100:.1f}%)")
+
+# Verify we have data
+if len(df_test) == 0:
+    raise ValueError("Test set is empty! Check temporal_split column in data.")
 
 # ================================================================
 # 7. LABEL DISTRIBUTION ANALYSIS
