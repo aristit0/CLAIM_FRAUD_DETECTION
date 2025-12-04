@@ -1,5 +1,5 @@
 // Configuration file - edit API_BASE to match your backend
-export const API_BASE = 'http://127.0.0.1:2223'
+export const API_BASE = 'http://127.0.0.1:2222'
 
 // Change this if running backend on different host/port
 // Examples:
