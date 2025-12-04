@@ -128,10 +128,10 @@
             <div class="metric-card bg-gray-800 bg-opacity-50 p-4 rounded-lg text-center">
                 <div class="text-gray-400 text-sm mb-1">Cost Anomaly</div>
                 <div class="text-4xl font-bold 
-                    {% if m.features.cost_anomaly_score >= 3 %}text-red-400
+                    {% if m.features.cost_anomaly >= 3 %}text-red-400
                     {% elif m.features.cost_anomaly_score >= 2 %}text-yellow-400
                     {% else %}text-green-400{% endif %}">
-                    {{ m.features.cost_anomaly_score }}/4
+                    {{ m.features.cost_anomaly }}/4
                 </div>
                 <div class="text-xs text-gray-500 mt-1">Severity level</div>
             </div>

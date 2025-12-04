@@ -160,9 +160,45 @@
         <!-- ======================================= -->
         <!-- AUTO FILL BUTTONS -->
         <!-- ======================================= -->
-        <div class="d-flex gap-2 mb-3">
-            <button type="button" class="btn btn-success w-50" onclick="fillNormal();">Auto Normal</button>
-            <button type="button" class="btn btn-danger w-50" onclick="fillFraud();">Auto Fraud</button>
+        <div class="card mb-4">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0">Quick Fill Examples</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6 mb-2">
+                        <div class="card">
+                            <div class="card-header bg-success text-white">
+                                <strong>NORMAL CLAIMS (Valid)</strong>
+                            </div>
+                            <div class="card-body">
+                                <button type="button" class="btn btn-success mb-2 w-100" onclick="fillNormalISPA()">
+                                    Normal ISPA Claim
+                                </button>
+                                <button type="button" class="btn btn-success w-100" onclick="fillNormalGastritis()">
+                                    Normal Gastritis Claim
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-6 mb-2">
+                        <div class="card">
+                            <div class="card-header bg-danger text-white">
+                                <strong>FRAUD CLAIMS (Suspicious)</strong>
+                            </div>
+                            <div class="card-body">
+                                <button type="button" class="btn btn-danger mb-2 w-100" onclick="fillFraudMismatch()">
+                                    Clinical Mismatch
+                                </button>
+                                <button type="button" class="btn btn-danger w-100" onclick="fillFraudCostAnomaly()">
+                                    Cost Anomaly
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <button class="btn btn-primary w-100">Submit Claim</button>
@@ -170,109 +206,162 @@
 </div>
 
 <script>
-function rand(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+// ===============================
+// UTILITIES
+// ===============================
+function rand(arr) { 
+    return arr[Math.floor(Math.random() * arr.length)]; 
+}
 
-const ICD10 = JSON.parse(`{{ ICD10|tojson|safe }}`);
-const ICD9 = JSON.parse(`{{ ICD9|tojson|safe }}`);
-const DRUGS = JSON.parse(`{{ DRUGS|tojson|safe }}`);
-const VITAMINS = JSON.parse(`{{ VITAMINS|tojson|safe }}`);
+const ICD10 = {{ ICD10|tojson }};
+const ICD9 = {{ ICD9|tojson }};
+const DRUGS = {{ DRUGS|tojson }};
+const VITAMINS = {{ VITAMINS|tojson }};
 
-// Helper untuk set ICD-10 primary/secondary secara aman
+// Safe selector setter
 function setSelectValue(id, code) {
-    let sel = document.getElementById(id);
+    const sel = document.getElementById(id);
+    if (!sel) return;
+
     for (let opt of sel.options) {
-        if (opt.value.trim() === code.trim()) {
-            sel.value = code;
-            return;
-        }
-        if (opt.text.startsWith(code + " ")) {
+        if (opt.value === code || opt.text.startsWith(code + " ")) {
             sel.value = opt.value;
             return;
         }
     }
 }
 
-// ---------------- Dynamic Row Builders ----------------
-function addProcedureRow(code="", cost="") {
+// ===============================
+// Row Builders
+// ===============================
+function addProcedureRow(code = "", cost = "") {
+    let options = ICD9.map(x => 
+        `<option value="${x[0]}" ${x[0] === code ? "selected" : ""}>${x[0]} - ${x[1]}</option>`
+    ).join("");
+
     let row = `
     <tr>
-        <td>
-            <select name="procedure_code[]" class="form-control">
-                ${ICD9.map(x => `<option value="${x[0]}" ${x[0]==code?'selected':''}>${x[0]} - ${x[1]}</option>`)}
-            </select>
-        </td>
-        <td><input type="number" name="procedure_cost[]" class="form-control" value="${cost}"></td>
-        <td><button type="button" class="btn btn-danger" onclick="this.closest('tr').remove()">X</button></td>
+        <td><select name="procedure_code[]" class="form-control">${options}</select></td>
+        <td><input type="number" class="form-control" name="procedure_cost[]" value="${cost}" placeholder="Cost"></td>
+        <td><button type="button" class="btn btn-danger btn-sm" onclick="this.closest('tr').remove()">X</button></td>
     </tr>`;
+    
     document.querySelector("#tbl_procedures tbody").insertAdjacentHTML("beforeend", row);
 }
 
-function addDrugRow(code="", cost="") {
+function addDrugRow(code = "", cost = "") {
+    let options = DRUGS.map(x =>
+        `<option value="${x[0]}" ${x[0] === code ? "selected" : ""}>${x[0]} - ${x[1]}</option>`
+    ).join("");
+
     let row = `
     <tr>
-        <td>
-            <select name="drug_code[]" class="form-control">
-                ${DRUGS.map(x => `<option value="${x[0]}" ${x[0]==code?'selected':''}>${x[0]} - ${x[1]}</option>`)}
-            </select>
-        </td>
-        <td><input type="number" name="drug_cost[]" class="form-control" value="${cost}"></td>
-        <td><button type="button" class="btn btn-danger" onclick="this.closest('tr').remove()">X</button></td>
+        <td><select name="drug_code[]" class="form-control">${options}</select></td>
+        <td><input type="number" class="form-control" name="drug_cost[]" value="${cost}" placeholder="Cost"></td>
+        <td><button type="button" class="btn btn-danger btn-sm" onclick="this.closest('tr').remove()">X</button></td>
     </tr>`;
+
     document.querySelector("#tbl_drugs tbody").insertAdjacentHTML("beforeend", row);
 }
 
-function addVitaminRow(name="", cost="") {
+function addVitaminRow(name = "", cost = "") {
+    let options = VITAMINS.map(v =>
+        `<option value="${v}" ${v === name ? "selected" : ""}>${v}</option>`
+    ).join("");
+
     let row = `
     <tr>
-        <td>
-            <select name="vitamin_name[]" class="form-control">
-                ${VITAMINS.map(v => `<option ${v==name?'selected':''}>${v}</option>`)}
-            </select>
-        </td>
-        <td><input type="number" name="vitamin_cost[]" class="form-control" value="${cost}"></td>
-        <td><button type="button" class="btn btn-danger" onclick="this.closest('tr').remove()">X</button></td>
+        <td><select name="vitamin_name[]" class="form-control">${options}</select></td>
+        <td><input type="number" class="form-control" name="vitamin_cost[]" value="${cost}" placeholder="Cost"></td>
+        <td><button type="button" class="btn btn-danger btn-sm" onclick="this.closest('tr').remove()">X</button></td>
     </tr>`;
+
     document.querySelector("#tbl_vitamins tbody").insertAdjacentHTML("beforeend", row);
 }
 
-// =======================================================
-// AUTO FILL NORMAL
-// =======================================================
-function fillNormal() {
-    // Basic Data
-    document.querySelector("input[name='patient_name']").value = "Budi Santoso";
-    document.querySelector("input[name='patient_nik']").value = "3174091501800004";
-    document.querySelector("input[name='patient_dob']").value = "1989-01-20";
-    document.querySelector("select[name='patient_gender']").value = "M";
-    document.querySelector("input[name='patient_phone']").value = "081234567810";
-    document.querySelector("input[name='patient_address']").value = "Jl. Merdeka No.100 Bandung";
-
-    // Visit
-    document.querySelector("input[name='visit_date']").value = "2025-02-11";
-    document.querySelector("select[name='visit_type']").value = "rawat jalan";
-    document.querySelector("input[name='doctor_name']").value = "Dr. Rina";
-    document.querySelector("select[name='department']").value = "Poli Umum";
-
-    // Diagnosis
-    setSelectValue("dx_primary", "J06.9");
-    setSelectValue("dx_secondary", "R05");
-
-    // Reset dynamic tables
+// ===============================
+// RESET ALL TABLES
+// ===============================
+function resetTables() {
     document.querySelector("#tbl_procedures tbody").innerHTML = "";
     document.querySelector("#tbl_drugs tbody").innerHTML = "";
     document.querySelector("#tbl_vitamins tbody").innerHTML = "";
-
-    // Clean normal entries
-    addProcedureRow("89.0", 45000);
-    addDrugRow("PARA500", 15000);
-    addVitaminRow("VITC99", 5000);
 }
 
-// =======================================================
-// AUTO FILL FRAUD — Real Demo Case based on CML
-// =======================================================
-function fillFraud() {
+// ===============================
+// AUTO NORMAL CLAIM - ISPA Valid (LOWEST RISK)
+// ===============================
+function fillNormalISPA() {
+    // — Basic Info —
+    document.querySelector("input[name='patient_name']").value = "Budi Santoso";
+    document.querySelector("input[name='patient_nik']").value = "3174091501800004";
+    document.querySelector("input[name='patient_dob']").value = "1985-06-15";
+    document.querySelector("select[name='patient_gender']").value = "M";
+    document.querySelector("input[name='patient_phone']").value = "081234567810";
+    document.querySelector("input[name='patient_address']").value = "Jl. Merdeka No.100 Jakarta";
 
+    // — Visit —
+    document.querySelector("input[name='visit_date']").value = "2024-12-04";
+    document.querySelector("select[name='visit_type']").value = "rawat jalan";
+    document.querySelector("input[name='doctor_name']").value = "Dr. Surya";
+    document.querySelector("select[name='department']").value = "Poli Umum";
+
+    // — Diagnosis —
+    setSelectValue("dx_primary", "J06");
+    setSelectValue("dx_secondary", "");
+
+    resetTables();
+
+    // — Procedures —
+    addProcedureRow("89.02", 75000);
+    
+    // — Drugs —
+    addDrugRow("KFA001", 25000);
+    
+    // — Vitamins —
+    addVitaminRow("Vitamin C 500 mg", 15000);
+}
+
+// ===============================
+// AUTO NORMAL CLAIM - Gastritis Valid (LOW RISK)
+// ===============================
+function fillNormalGastritis() {
+    // — Basic Info —
+    document.querySelector("input[name='patient_name']").value = "Rina Melati";
+    document.querySelector("input[name='patient_nik']").value = "3174082207810005";
+    document.querySelector("input[name='patient_dob']").value = "1981-07-22";
+    document.querySelector("select[name='patient_gender']").value = "F";
+    document.querySelector("input[name='patient_phone']").value = "081555666777";
+    document.querySelector("input[name='patient_address']").value = "Jl. Melati No.15 Bandung";
+
+    // — Visit —
+    document.querySelector("input[name='visit_date']").value = "2025-01-18";
+    document.querySelector("select[name='visit_type']").value = "rawat jalan";
+    document.querySelector("input[name='doctor_name']").value = "Dr. Wijaya";
+    document.querySelector("select[name='department']").value = "Poli Umum";
+
+    // — Diagnosis —
+    setSelectValue("dx_primary", "K29");
+    setSelectValue("dx_secondary", "");
+
+    resetTables();
+
+    // — Procedures —
+    addProcedureRow("03.31", 120000);
+    
+    // — Drugs —
+    addDrugRow("KFA004", 35000);
+    addDrugRow("KFA023", 25000);
+    
+    // — Vitamins —
+    addVitaminRow("Multivitamin Adult", 20000);
+}
+
+// ===============================
+// AUTO FRAUD CLAIM - TYPE 1: Clinical Mismatch
+// ===============================
+function fillFraudMismatch() {
+    // — Basic Info —
     document.querySelector("input[name='patient_name']").value = "Maya Pratiwi";
     document.querySelector("input[name='patient_nik']").value = "3175024302759999";
     document.querySelector("input[name='patient_dob']").value = "1988-09-14";
@@ -280,28 +369,83 @@ function fillFraud() {
     document.querySelector("input[name='patient_phone']").value = "08129822222";
     document.querySelector("input[name='patient_address']").value = "Jl. Sudirman No.88 Bekasi";
 
+    // — Visit —
     document.querySelector("input[name='visit_date']").value = "2025-02-08";
     document.querySelector("select[name='visit_type']").value = "rawat jalan";
     document.querySelector("input[name='doctor_name']").value = "Dr. Hartono";
     document.querySelector("select[name='department']").value = "Poli Umum";
 
-    setSelectValue("dx_primary", "J06.9");
-    setSelectValue("dx_secondary", "R50");
+    // — Diagnosis —
+    setSelectValue("dx_primary", "J06");
+    setSelectValue("dx_secondary", "");
 
-    document.querySelector("#tbl_procedures tbody").innerHTML = "";
-    document.querySelector("#tbl_drugs tbody").innerHTML = "";
-    document.querySelector("#tbl_vitamins tbody").innerHTML = "";
+    resetTables();
 
-    // Fraud pattern
-    addProcedureRow("89.0", 75000);
-    addProcedureRow("99.1", 250000);
-
-    addDrugRow("PARA500", 30000);
-    addDrugRow("ABX-99", 150000);
-
-    addVitaminRow("VITC99", 50000);
-    addVitaminRow("VITB12", 90000);
+    // — Procedures —
+    addProcedureRow("45.13", 750000);
+    addProcedureRow("93.05", 250000);
+    
+    // — Drugs —
+    addDrugRow("KFA035", 150000);
+    addDrugRow("KFA007", 85000);
+    
+    // — Vitamins —
+    addVitaminRow("Vitamin B Complex", 75000);
+    addVitaminRow("Vitamin C 500 mg", 50000);
+    addVitaminRow("Zinc 20 mg", 35000);
 }
+
+// ===============================
+// AUTO FRAUD CLAIM - TYPE 2: Cost Anomaly
+// ===============================
+function fillFraudCostAnomaly() {
+    // — Basic Info —
+    document.querySelector("input[name='patient_name']").value = "Joko Susanto";
+    document.querySelector("input[name='patient_nik']").value = "3173092503760001";
+    document.querySelector("input[name='patient_dob']").value = "1976-03-25";
+    document.querySelector("select[name='patient_gender']").value = "M";
+    document.querySelector("input[name='patient_phone']").value = "081377788899";
+    document.querySelector("input[name='patient_address']").value = "Jl. Gatot Subroto No.45 Jakarta";
+
+    // — Visit —
+    document.querySelector("input[name='visit_date']").value = "2025-01-20";
+    document.querySelector("select[name='visit_type']").value = "rawat jalan";
+    document.querySelector("input[name='doctor_name']").value = "Dr. Indra";
+    document.querySelector("select[name='department']").value = "Poli Umum";
+
+    // — Diagnosis —
+    setSelectValue("dx_primary", "J06");
+    setSelectValue("dx_secondary", "");
+
+    resetTables();
+
+    // — Procedures —
+    addProcedureRow("89.02", 450000);
+    addProcedureRow("89.14", 550000);
+    addProcedureRow("96.04", 650000);
+    
+    // — Drugs —
+    addDrugRow("KFA001", 125000);
+    addDrugRow("KFA009", 95000);
+    addDrugRow("KFA026", 85000);
+    addDrugRow("KFA031", 75000);
+    
+    // — Vitamins —
+    addVitaminRow("Multivitamin Adult", 150000);
+    addVitaminRow("Vitamin C 500 mg", 100000);
+    addVitaminRow("Vitamin B1 100 mg", 80000);
+}
+
+// ===============================
+// INITIALIZE FORM WITH DEFAULT ROWS
+// ===============================
+document.addEventListener('DOMContentLoaded', function() {
+    // Add one initial row to each table for better UX
+    addProcedureRow();
+    addDrugRow();
+    addVitaminRow();
+});
+
 </script>
 
 {% endblock %}
