@@ -511,14 +511,14 @@ for row in label_dist:
 print("✓ Ground truth labels created")
 
 # ================================================================
-# 15. SELECT FINAL FEATURES WITH EXPLICIT CASTING
+# 15. SELECT FINAL FEATURES (FIX DATA TYPES)
 # ================================================================
-print("\n[Step 15/15] Selecting final feature set with data type casting...")
+print("\n[Step 15/15] Selecting final features with explicit casting...")
 
 base = base.withColumn("created_at", current_timestamp())
 
 feature_df = base.select(
-    col("claim_id").cast("bigint"),
+    col("claim_id").cast("bigint"),  
     col("patient_nik").cast("string"),
     col("patient_name").cast("string"),
     col("patient_gender").cast("string"),
@@ -549,13 +549,13 @@ feature_df = base.select(
     col("drug_mismatch_flag").cast("int"),
     col("vitamin_mismatch_flag").cast("int"),
     col("mismatch_count").cast("int"),
-    col("patient_frequency_risk").cast("bigint"),
+    col("patient_frequency_risk").cast("bigint"),   
     when(col("days_since_last_claim").isNull(), lit(None))
         .otherwise(col("days_since_last_claim")).cast("int").alias("days_since_last_claim"),
     col("suspicious_frequency_flag").cast("int"),
     col("suspicious_duplicate_flag").cast("int"),
     col("suspicious_duplicate_count").cast("int"),
-    col("dx_sample_size").cast("int"),
+    col("dx_sample_size").cast("bigint"),   
     col("biaya_anomaly_score").cast("int"),
     col("rule_violation_flag").cast("int"),
     col("human_label").cast("int"),
