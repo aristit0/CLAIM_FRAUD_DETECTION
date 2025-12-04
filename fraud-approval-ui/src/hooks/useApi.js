@@ -1,97 +1,49 @@
-import { useState, useCallback } from 'react'
+// ================================================================
+// Custom Hook for API Calls - Error Handling & Loading States
+// ================================================================
 
-const API_BASE = '/api'
+import { useState, useCallback } from 'react'
+import axios from 'axios'
 
 export function useApi() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
-  const fetchClaims = useCallback(async (page = 1, limit = 20) => {
+  const request = useCallback(async (url, method = 'GET', data = null) => {
     setLoading(true)
     setError(null)
-    try {
-      const res = await fetch(`${API_BASE}/claims?page=${page}&limit=${limit}`)
-      const data = await res.json()
-      return data
-    } catch (err) {
-      setError(err.message)
-      return null
-    } finally {
-      setLoading(false)
-    }
-  }, [])
 
-  const fetchClaimDetail = useCallback(async (claimId) => {
-    setLoading(true)
-    setError(null)
     try {
-      const res = await fetch(`${API_BASE}/get_claim`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ claim_id: claimId }),
-      })
-      const data = await res.json()
-      return data
-    } catch (err) {
-      setError(err.message)
-      return null
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  const updateClaimStatus = useCallback(async (claimId, status) => {
-    setLoading(true)
-    setError(null)
-    try {
-      const res = await fetch(`${API_BASE}/update_status/${claimId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status }),
-      })
-      const data = await res.json()
-      return data
-    } catch (err) {
-      setError(err.message)
-      return null
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  const login = useCallback(async (username, password) => {
-    setLoading(true)
-    setError(null)
-    try {
-      const formData = new FormData()
-      formData.append('username', username)
-      formData.append('password', password)
-      
-      const res = await fetch('/', {
-        method: 'POST',
-        body: formData,
-      })
-      
-      if (res.redirected || res.url.includes('dashboard')) {
-        return { success: true }
+      const config = {
+        method,
+        url,
+        headers: {
+          'Content-Type': 'application/json',
+        },
       }
-      return { success: false, error: 'Invalid credentials' }
-    } catch (err) {
-      setError(err.message)
-      return { success: false, error: err.message }
-    } finally {
+
+      if (data) {
+        config.data = data
+      }
+
+      const response = await axios(config)
       setLoading(false)
+
+      if (response.data.success === false) {
+        setError(response.data.error || 'An error occurred')
+        return null
+      }
+
+      return response.data
+    } catch (err) {
+      const errorMsg = err.response?.data?.error || err.message || 'Network error'
+      setError(errorMsg)
+      setLoading(false)
+      return null
     }
   }, [])
 
-  return {
-    loading,
-    error,
-    fetchClaims,
-    fetchClaimDetail,
-    updateClaimStatus,
-    login,
-  }
+  return { loading, error, request }
 }
 
 // Mock data for development

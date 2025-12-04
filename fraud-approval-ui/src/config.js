@@ -1,7 +1,25 @@
-// Configuration file - edit API_BASE to match your backend
-export const API_BASE = 'http://127.0.0.1:2222'
+// ================================================================
+// API Configuration - Production Ready
+// ================================================================
 
-// Change this if running backend on different host/port
-// Examples:
-// export const API_BASE = 'http://192.168.1.100:2223'
-// export const API_BASE = 'https://api.yourdomain.com'
+const isDev = import.meta.env.DEV
+
+export const API_BASE = isDev
+  ? 'http://127.0.0.1:2223/api'
+  : '/api'
+
+export const API_ENDPOINTS = {
+  // Authentication
+  login: `${API_BASE}/login`,
+  logout: `${API_BASE}/logout`,
+
+  // Claims Management
+  getClaimsList: `${API_BASE}/claims`,
+  getClaimDetail: (claimId) => `${API_BASE}/claims/${claimId}`,
+  updateClaim: (claimId) => `${API_BASE}/claims/${claimId}/update`,
+
+  // Statistics & Dashboard
+  getStatistics: `${API_BASE}/statistics`,
+}
+
+export default API_BASE
