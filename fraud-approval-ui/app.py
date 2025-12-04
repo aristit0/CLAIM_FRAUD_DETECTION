@@ -26,7 +26,7 @@ def db():
 app = Flask(__name__)
 
 # CORS for React frontend
-CORS(app, origins=["http://localhost:2224", "http://127.0.0.1:2224", "http://localhost:5173", "http://127.0.0.1:5173"])
+CORS(app, origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5173", "http://127.0.0.1:5173"])
 
 app.secret_key = "supersecretkey_approval_ui"
 app.config.update(
@@ -345,4 +345,4 @@ def logout():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=2224)
+    app.run(host="0.0.0.0", port=2223)

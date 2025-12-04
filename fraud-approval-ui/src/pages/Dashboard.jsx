@@ -1,249 +1,241 @@
-// ================================================================
-// Dashboard Page Component - Claims List
-// ================================================================
-
-import React, { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useApi } from '../hooks/useApi'
-import { Button } from '../components/ui/button'
-import { Card } from '../components/ui/card'
-import { Badge } from '../components/ui/badge'
-import { LogOut, Eye, ChevronLeft, ChevronRight } from 'lucide-react'
+import { motion } from 'framer-motion'
+import { Search, LogOut, Eye, AlertTriangle, CheckCircle2, Clock, FileText, TrendingUp, Zap, BarChart3, PieChart, Activity } from 'lucide-react'
+import { PieChart as RePieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts'
+import { Button } from '@/components/ui/button'
+import { Input, Badge } from '@/components/ui/components'
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
+import { formatRupiah, formatDate, getStatusBadge } from '@/lib/utils'
+import { API_BASE } from '@/config'
 
-export default function Dashboard({ onLogout }) {
+const COLORS = ['#a855f7', '#06b6d4', '#ec4899', '#22c55e', '#f97316']
+
+export default function Dashboard() {
   const navigate = useNavigate()
-  const { loading, error, request } = useApi()
   const [claims, setClaims] = useState([])
-  const [page, setPage] = useState(1)
-  const [totalPages, setTotalPages] = useState(0)
   const [stats, setStats] = useState({})
+  const [search, setSearch] = useState('')
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetchClaims()
-    fetchStats()
-  }, [page])
+    if (!localStorage.getItem('auth')) { navigate('/'); return }
+    fetchData()
+  }, [navigate])
 
-  const fetchClaims = async () => {
-    const response = await request(`/api/claims?page=${page}&limit=20`, 'GET')
-    if (response && response.success) {
-      setClaims(response.data || [])
-      setTotalPages(response.pagination?.total_pages || 0)
-    }
+  const fetchData = async () => {
+    try {
+      const [claimsRes, statsRes] = await Promise.all([
+        fetch(`${API_BASE}/claims`),
+        fetch(`${API_BASE}/stats`)
+      ])
+      const claimsData = await claimsRes.json()
+      const statsData = await statsRes.json()
+      setClaims(claimsData.claims || [])
+      setStats(statsData)
+    } catch (e) { console.error(e) }
+    setLoading(false)
   }
 
-  const fetchStats = async () => {
-    const response = await request('/api/statistics', 'GET')
-    if (response && response.success) {
-      setStats(response)
-    }
-  }
+  const filtered = claims.filter(c => 
+    c.patient_name?.toLowerCase().includes(search.toLowerCase()) || 
+    c.claim_id?.toString().includes(search)
+  )
 
-  const handleLogout = async () => {
-    await request('/api/logout', 'POST')
-    onLogout()
-    navigate('/login')
-  }
+  const pieData = [
+    { name: 'Pending', value: stats.pending || 0 },
+    { name: 'Approved', value: stats.approved || 0 },
+    { name: 'Declined', value: stats.declined || 0 },
+  ]
 
-  const getRiskBadge = (amount) => {
-    if (amount > 1000000) return 'HIGH'
-    if (amount > 500000) return 'MEDIUM'
-    return 'LOW'
-  }
-
-  const formatDate = (dateStr) => {
-    return new Date(dateStr).toLocaleDateString('id-ID', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric'
-    })
-  }
-
-  const formatCurrency = (amount) => {
-    return new Intl.NumberFormat('id-ID', {
-      style: 'currency',
-      currency: 'IDR',
-      minimumFractionDigits: 0
-    }).format(amount)
-  }
+  const barData = stats.by_department || []
+  const trendData = stats.daily_trend || []
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen pb-10">
       {/* Header */}
-      <div className="bg-white shadow">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-900">Claims Approval</h1>
-            <p className="text-gray-600 mt-1">Fraud Detection System</p>
+      <header className="glass sticky top-0 z-50 border-b border-white/10">
+        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-600 to-cyan-500 flex items-center justify-center">
+              <Zap className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold font-display gradient-text">Fraud Approval</h1>
+              <p className="text-xs text-white/50">Dashboard</p>
+            </div>
           </div>
-          <Button
-            variant="outline"
-            onClick={handleLogout}
-            className="flex items-center gap-2"
-          >
-            <LogOut className="w-4 h-4" />
-            Logout
-          </Button>
+          <div className="flex items-center gap-3">
+            <Badge>{localStorage.getItem('user')}</Badge>
+            <Button variant="ghost" size="icon" onClick={() => { localStorage.clear(); navigate('/') }}>
+              <LogOut className="w-5 h-5" />
+            </Button>
+          </div>
         </div>
-      </div>
+      </header>
 
-      {/* Main Content */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <main className="max-w-7xl mx-auto px-4 pt-6 space-y-6">
         {/* Stats Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-          <Card className="p-6">
-            <p className="text-gray-600 text-sm font-medium">Pending</p>
-            <p className="text-3xl font-bold text-gray-900 mt-2">
-              {stats.status_counts?.pending || 0}
-            </p>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          {[
+            { label: 'Pending', value: stats.pending || 0, icon: Clock, gradient: 'from-amber-500 to-orange-500', glow: 'glow-orange' },
+            { label: 'High Risk', value: stats.high_risk || 0, icon: AlertTriangle, gradient: 'from-red-500 to-pink-500', glow: 'glow-red' },
+            { label: 'Approved', value: stats.approved || 0, icon: CheckCircle2, gradient: 'from-emerald-500 to-teal-500', glow: 'glow-green' },
+            { label: 'Total', value: stats.total || 0, icon: FileText, gradient: 'from-purple-500 to-cyan-500', glow: 'glow-purple' },
+          ].map((s, i) => (
+            <motion.div key={s.label} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.1 }}>
+              <Card className="stat-card hover-lift" style={{ '--card-accent': `linear-gradient(90deg, var(--tw-gradient-stops))` }}>
+                <CardContent className="p-5">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className="text-sm text-white/60">{s.label}</p>
+                      <p className="text-3xl font-bold font-display mt-1">{s.value.toLocaleString()}</p>
+                    </div>
+                    <div className={`w-12 h-12 rounded-xl bg-gradient-to-br ${s.gradient} flex items-center justify-center ${s.glow}`}>
+                      <s.icon className="w-6 h-6 text-white" />
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </motion.div>
+          ))}
+        </div>
+
+        {/* Charts Row */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Pie Chart */}
+          <Card className="hover-lift">
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <PieChart className="w-5 h-5 text-purple-400" /> Status Distribution
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ResponsiveContainer width="100%" height={200}>
+                <RePieChart>
+                  <Pie data={pieData} cx="50%" cy="50%" innerRadius={50} outerRadius={80} paddingAngle={5} dataKey="value">
+                    {pieData.map((_, i) => <Cell key={i} fill={COLORS[i]} />)}
+                  </Pie>
+                  <Tooltip contentStyle={{ background: 'rgba(0,0,0,0.8)', border: 'none', borderRadius: 8 }} />
+                </RePieChart>
+              </ResponsiveContainer>
+              <div className="flex justify-center gap-4 mt-2">
+                {pieData.map((d, i) => (
+                  <div key={d.name} className="flex items-center gap-1 text-xs">
+                    <div className="w-3 h-3 rounded-full" style={{ background: COLORS[i] }} />
+                    <span className="text-white/60">{d.name}</span>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
           </Card>
-          <Card className="p-6">
-            <p className="text-gray-600 text-sm font-medium">Approved</p>
-            <p className="text-3xl font-bold text-green-600 mt-2">
-              {stats.status_counts?.approved || 0}
-            </p>
+
+          {/* Bar Chart */}
+          <Card className="hover-lift">
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <BarChart3 className="w-5 h-5 text-cyan-400" /> By Department
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={barData} layout="vertical">
+                  <XAxis type="number" hide />
+                  <YAxis type="category" dataKey="name" width={80} tick={{ fill: '#fff', fontSize: 10 }} />
+                  <Tooltip contentStyle={{ background: 'rgba(0,0,0,0.8)', border: 'none', borderRadius: 8 }} />
+                  <Bar dataKey="count" fill="url(#barGradient)" radius={[0, 4, 4, 0]} />
+                  <defs>
+                    <linearGradient id="barGradient" x1="0" y1="0" x2="1" y2="0">
+                      <stop offset="0%" stopColor="#a855f7" />
+                      <stop offset="100%" stopColor="#06b6d4" />
+                    </linearGradient>
+                  </defs>
+                </BarChart>
+              </ResponsiveContainer>
+            </CardContent>
           </Card>
-          <Card className="p-6">
-            <p className="text-gray-600 text-sm font-medium">Declined</p>
-            <p className="text-3xl font-bold text-red-600 mt-2">
-              {stats.status_counts?.declined || 0}
-            </p>
+
+          {/* Trend Chart */}
+          <Card className="hover-lift">
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Activity className="w-5 h-5 text-pink-400" /> Daily Trend
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ResponsiveContainer width="100%" height={220}>
+                <AreaChart data={trendData}>
+                  <XAxis dataKey="date" tick={{ fill: '#fff', fontSize: 10 }} />
+                  <YAxis hide />
+                  <Tooltip contentStyle={{ background: 'rgba(0,0,0,0.8)', border: 'none', borderRadius: 8 }} />
+                  <defs>
+                    <linearGradient id="areaGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#ec4899" stopOpacity={0.5} />
+                      <stop offset="100%" stopColor="#ec4899" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <Area type="monotone" dataKey="count" stroke="#ec4899" fill="url(#areaGradient)" strokeWidth={2} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </CardContent>
           </Card>
-          <Card className="p-6">
-            <p className="text-gray-600 text-sm font-medium">Manual Review</p>
-            <p className="text-3xl font-bold text-yellow-600 mt-2">
-              {stats.status_counts?.manual_review || 0}
-            </p>
-          </Card>
+        </div>
+
+        {/* Search */}
+        <div className="relative">
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-white/40" />
+          <Input placeholder="Cari claim ID atau nama pasien..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-12" />
         </div>
 
         {/* Claims Table */}
         <Card>
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-gray-50 border-b">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">
-                    Claim ID
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">
-                    Patient
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">
-                    Department
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">
-                    Amount
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">
-                    Date
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">
-                    Status
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase">
-                    Action
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {loading && (
-                  <tr>
-                    <td colSpan="7" className="px-6 py-8 text-center text-gray-600">
-                      Loading claims...
-                    </td>
-                  </tr>
-                )}
-                {error && (
-                  <tr>
-                    <td colSpan="7" className="px-6 py-8 text-center text-red-600">
-                      Error: {error}
-                    </td>
-                  </tr>
-                )}
-                {claims.length === 0 && !loading && !error && (
-                  <tr>
-                    <td colSpan="7" className="px-6 py-8 text-center text-gray-600">
-                      No pending claims
-                    </td>
-                  </tr>
-                )}
-                {claims.map((claim) => (
-                  <tr key={claim.claim_id} className="hover:bg-gray-50 transition">
-                    <td className="px-6 py-4 text-sm font-medium text-blue-600">
-                      #{claim.claim_id}
-                    </td>
-                    <td className="px-6 py-4 text-sm text-gray-900">
-                      {claim.patient_name}
-                    </td>
-                    <td className="px-6 py-4 text-sm text-gray-700">
-                      {claim.department}
-                    </td>
-                    <td className="px-6 py-4 text-sm font-medium text-gray-900">
-                      {formatCurrency(claim.total_claim_amount)}
-                    </td>
-                    <td className="px-6 py-4 text-sm text-gray-700">
-                      {formatDate(claim.visit_date)}
-                    </td>
-                    <td className="px-6 py-4">
-                      <Badge
-                        variant={
-                          claim.status === 'pending' ? 'default' :
-                          claim.status === 'approved' ? 'success' :
-                          claim.status === 'declined' ? 'destructive' : 'secondary'
-                        }
-                      >
-                        {claim.status}
-                      </Badge>
-                    </td>
-                    <td className="px-6 py-4">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => navigate(`/review/${claim.claim_id}`)}
-                        className="flex items-center gap-2"
-                      >
-                        <Eye className="w-4 h-4" />
-                        Review
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Pagination */}
-          {totalPages > 1 && (
-            <div className="px-6 py-4 border-t flex items-center justify-between">
-              <p className="text-sm text-gray-600">
-                Page {page} of {totalPages}
-              </p>
-              <div className="flex gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={page === 1}
-                  onClick={() => setPage(page - 1)}
-                  className="flex items-center gap-1"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                  Previous
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={page === totalPages}
-                  onClick={() => setPage(page + 1)}
-                  className="flex items-center gap-1"
-                >
-                  Next
-                  <ChevronRight className="w-4 h-4" />
-                </Button>
+          <CardHeader className="border-b border-white/10">
+            <CardTitle className="flex items-center gap-2">
+              <FileText className="w-5 h-5 text-purple-400" /> Pending Claims
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            {loading ? (
+              <div className="p-12 text-center">
+                <div className="w-8 h-8 mx-auto border-4 border-purple-500 border-t-transparent rounded-full animate-spin" />
               </div>
-            </div>
-          )}
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-white/10 bg-white/[0.02]">
+                      {['ID', 'Pasien', 'Tanggal', 'Tipe', 'Departemen', 'Total', 'Status', 'Aksi'].map(h => (
+                        <th key={h} className="text-left p-4 text-xs font-semibold text-white/50 uppercase">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map((c, i) => (
+                      <motion.tr key={c.claim_id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.03 }}
+                        className="border-b border-white/5 hover:bg-white/5 cursor-pointer transition-colors"
+                        onClick={() => navigate(`/review/${c.claim_id}`)}>
+                        <td className="p-4 font-mono text-sm text-purple-400">#{c.claim_id}</td>
+                        <td className="p-4 font-medium">{c.patient_name}</td>
+                        <td className="p-4 text-white/60 text-sm">{formatDate(c.visit_date)}</td>
+                        <td className="p-4"><Badge variant="info">{c.visit_type}</Badge></td>
+                        <td className="p-4 text-sm">{c.department}</td>
+                        <td className="p-4 font-semibold text-emerald-400">{formatRupiah(c.total_claim_amount)}</td>
+                        <td className="p-4"><Badge className={getStatusBadge(c.status)}>{c.status}</Badge></td>
+                        <td className="p-4">
+                          <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); navigate(`/review/${c.claim_id}`) }}>
+                            <Eye className="w-4 h-4 mr-1" /> Review
+                          </Button>
+                        </td>
+                      </motion.tr>
+                    ))}
+                  </tbody>
+                </table>
+                {filtered.length === 0 && <div className="p-12 text-center text-white/40">No claims found</div>}
+              </div>
+            )}
+          </CardContent>
         </Card>
-      </div>
+      </main>
     </div>
   )
 }
