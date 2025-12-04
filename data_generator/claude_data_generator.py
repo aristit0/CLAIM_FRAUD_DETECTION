@@ -1,554 +1,603 @@
 #!/usr/bin/env python3
+"""
+BPJS Claim Data Generator - Production Version
+Generates realistic claim data with controlled fraud patterns
+Based on clinical rules and master data from MySQL
+
+Features:
+- Realistic fraud patterns (15-30% fraud ratio)
+- Clinical rule compliance
+- Master data validation
+- Chronic patient simulation
+- Actor profiles (patient abusers, fraudster doctors)
+- Temporal patterns
+"""
+
 import random
-import csv
+import uuid
 import sys
 import os
-from faker import Faker
-from datetime import datetime
 import mysql.connector
+from faker import Faker
+from datetime import datetime, timedelta
+from collections import defaultdict
 
-# ================================================================
-# INLINE CONFIG (NO EXTERNAL IMPORTS)
-# ================================================================
-print("Initializing fraud detection data generator...")
-
-# CLINICAL COMPATIBILITY RULES
-COMPAT_RULES = {
-    "A09": {
-        "procedures": ["03.31", "03.91", "99.15"],
-        "drugs": ["KFA005", "KFA013", "KFA024", "KFA025", "KFA038"],
-        "vitamins": ["Vitamin D 1000 IU", "Zinc 20 mg", "Probiotic Complex"]
-    },
-    "K29": {
-        "procedures": ["45.13", "03.31", "89.02"],
-        "drugs": ["KFA004", "KFA012", "KFA023", "KFA034", "KFA037"],
-        "vitamins": ["Vitamin E 400 IU", "Vitamin B Complex"]
-    },
-    "K52": {
-        "procedures": ["03.31", "03.92"],
-        "drugs": ["KFA004", "KFA024", "KFA038"],
-        "vitamins": ["Probiotic Complex", "Zinc 20 mg"]
-    },
-    "K21": {
-        "procedures": ["45.13", "89.02"],
-        "drugs": ["KFA004", "KFA034", "KFA023"],
-        "vitamins": ["Vitamin E 200 IU"]
-    },
-    "J06": {
-        "procedures": ["96.70", "89.02", "87.03"],
-        "drugs": ["KFA001", "KFA002", "KFA009", "KFA031"],
-        "vitamins": ["Vitamin C 500 mg", "Vitamin C 1000 mg", "Zinc 20 mg"]
-    },
-    "J06.9": {
-        "procedures": ["96.70", "89.02"],
-        "drugs": ["KFA001", "KFA002", "KFA009"],
-        "vitamins": ["Vitamin C 500 mg", "Zinc 20 mg"]
-    },
-    "J02": {
-        "procedures": ["89.02", "34.01"],
-        "drugs": ["KFA001", "KFA002", "KFA014"],
-        "vitamins": ["Vitamin C 1000 mg"]
-    },
-    "J20": {
-        "procedures": ["87.03", "89.02", "96.04"],
-        "drugs": ["KFA002", "KFA022", "KFA026"],
-        "vitamins": ["Vitamin C 1000 mg", "Vitamin B Complex"]
-    },
-    "J45": {
-        "procedures": ["96.04", "93.05", "87.03"],
-        "drugs": ["KFA010", "KFA011", "KFA021"],
-        "vitamins": ["Vitamin D 1000 IU", "Vitamin C 500 mg"]
-    },
-    "J18": {
-        "procedures": ["87.03", "03.31", "99.15"],
-        "drugs": ["KFA003", "KFA014", "KFA030", "KFA040"],
-        "vitamins": ["Vitamin C 1000 mg", "Vitamin D3 2000 IU"]
-    },
-    "I10": {
-        "procedures": ["03.31", "89.14", "89.02"],
-        "drugs": ["KFA007", "KFA019"],
-        "vitamins": ["Vitamin D 1000 IU", "Magnesium 250 mg", "Vitamin B Complex"]
-    },
-    "E11": {
-        "procedures": ["03.31", "90.59", "90.59A"],
-        "drugs": ["KFA006", "KFA035", "KFA036"],
-        "vitamins": ["Vitamin B Complex", "Vitamin D 1000 IU", "Magnesium 250 mg"]
-    },
-    "E16": {
-        "procedures": ["90.59", "03.31"],
-        "drugs": ["KFA035", "KFA036"],
-        "vitamins": ["Vitamin B Complex"]
-    },
-    "R51": {
-        "procedures": ["89.02"],
-        "drugs": ["KFA001", "KFA008", "KFA033"],
-        "vitamins": ["Vitamin B Complex", "Magnesium 250 mg"]
-    },
-    "G43": {
-        "procedures": ["89.02", "88.53"],
-        "drugs": ["KFA001", "KFA008", "KFA033"],
-        "vitamins": ["Magnesium 250 mg", "Vitamin B Complex Forte"]
-    },
-    "M54.5": {
-        "procedures": ["89.0", "93.27", "93.94"],
-        "drugs": ["KFA008", "KFA033", "KFA027"],
-        "vitamins": ["Vitamin D 1000 IU", "Calcium 500 mg"]
-    },
-    "N39": {
-        "procedures": ["03.91", "03.31"],
-        "drugs": ["KFA030", "KFA040"],
-        "vitamins": ["Vitamin C 1000 mg"]
-    },
-    "L03": {
-        "procedures": ["89.02", "96.70"],
-        "drugs": ["KFA003", "KFA014", "KFA039"],
-        "vitamins": ["Vitamin C 1000 mg"]
-    },
-    "T78.4": {
-        "procedures": ["89.02"],
-        "drugs": ["KFA009", "KFA031", "KFA028"],
-        "vitamins": ["Vitamin C 500 mg"]
-    },
-    "H10": {
-        "procedures": ["89.02"],
-        "drugs": ["KFA009", "KFA031"],
-        "vitamins": ["Vitamin A 5000 IU"]
-    }
-}
-
-# MASTER DATA
-MASTER_ICD9 = [
-    "03.31", "03.91", "03.92", "04.41", "04.43", "34.01", "34.02",
-    "34.03", "45.13", "45.16", "45.23", "87.03", "88.53", "88.72",
-    "89.0", "89.02", "89.14", "90.59", "90.59A", "93.05", "93.27",
-    "93.90", "93.94", "96.04", "96.70", "96.71", "99.04", "99.1",
-    "99.15", "99.21", "99.29", "99.89"
-]
-
-MASTER_DRUGS = [
-    "KFA001", "KFA002", "KFA003", "KFA004", "KFA005", "KFA006",
-    "KFA007", "KFA008", "KFA009", "KFA010", "KFA011", "KFA012",
-    "KFA013", "KFA014", "KFA021", "KFA022", "KFA023", "KFA024",
-    "KFA025", "KFA026", "KFA027", "KFA028", "KFA030", "KFA031",
-    "KFA033", "KFA034", "KFA035", "KFA036", "KFA037", "KFA038",
-    "KFA039", "KFA040"
-]
-
-# ================================================================
-# CONFIG
-# ================================================================
-TOTAL_CLAIMS = 300_000
-BATCH_COMMIT = 5000  # Commit every 5000 rows for performance
-FRAUD_RATIO = 0.35
+# ==============================================================================
+# CONFIGURATION
+# ==============================================================================
+TOTAL_CLAIMS = 100000
+START_DATE = datetime(2025, 1, 1)
+END_DATE = datetime(2025, 11, 20)
+BASE_FRAUD_RATIO = 0.15  # 15% base fraud rate
 
 DB_CONFIG = {
-    "host": "localhost",
-    "user": "root",
-    "password": "Admin123",
-    "database": "claimdb",
+    "host": "cdpmsi.tomodachis.org",
+    "user": "cloudera",
+    "password": "T1ku$H1t4m",
+    "database": "claimdb"
 }
 
 fake = Faker("id_ID")
 
-print(f"Configuration:")
-print(f"  - Target claims: {TOTAL_CLAIMS:,}")
-print(f"  - Fraud ratio: {FRAUD_RATIO:.0%}")
-print(f"  - Batch commit: {BATCH_COMMIT:,}")
-print(f"  - Diagnoses with rules: {len(COMPAT_RULES)}")
+# ==============================================================================
+# LOAD MASTER DATA FROM DATABASE
+# ==============================================================================
+print("=" * 80)
+print("BPJS CLAIM DATA GENERATOR - PRODUCTION VERSION")
+print("=" * 80)
+print("\n[1/7] Loading master data from database...")
 
-# ================================================================
-# DESCRIPTIONS
-# ================================================================
-ICD10_DESCRIPTIONS = {
-    "A09": "Diare dan gastroenteritis",
-    "J06": "Common cold",
-    "J06.9": "Common cold - unspecified",
-    "I10": "Hipertensi",
-    "E11": "Diabetes tipe 2",
-    "J45": "Asma",
-    "K29": "Gastritis",
-    "J02": "Faringitis akut",
-    "J20": "Bronkitis akut",
-    "J18": "Pneumonia, unspecified",
-    "K21": "GERD / reflux esofagitis",
-    "K52": "Gastroenteritis noninfeksi",
-    "N39": "Infeksi saluran kemih",
-    "R51": "Sakit kepala",
-    "G43": "Migrain",
-    "M54.5": "Nyeri punggung bawah",
-    "L03": "Selulitis",
-    "T78.4": "Alergi, unspecified",
-    "H10": "Konjungtivitis",
-    "E16": "Hipoglikemia",
-}
-
-ICD9_DESCRIPTIONS = {
-    "03.31": "Pemeriksaan darah",
-    "03.91": "Urinalisis",
-    "03.92": "Tes feses",
-    "45.13": "Endoskopi",
-    "96.70": "Injeksi obat",
-    "87.03": "X-ray dada",
-    "89.02": "Pemeriksaan fisik umum",
-    "89.14": "EKG",
-    "90.59": "Pemeriksaan glukosa darah",
-    "90.59A": "HbA1C test",
-    "96.04": "Nebulizer treatment",
-    "93.05": "Terapi inhalasi",
-    "99.15": "IV drip",
-    "93.27": "Terapi ultrasound",
-    "93.94": "Terapi panas",
-    "89.0": "Physical therapy",
-    "34.01": "Konsultasi THT",
-    "88.53": "CT Scan kepala",
-    "99.89": "Prosedur lainnya",
-}
-
-DRUG_DESCRIPTIONS = {
-    "KFA001": "Paracetamol 500 mg",
-    "KFA002": "Amoxicillin 500 mg",
-    "KFA003": "Ceftriaxone injeksi",
-    "KFA004": "Omeprazole 20 mg",
-    "KFA005": "ORS / Oralit",
-    "KFA006": "Metformin 500 mg",
-    "KFA007": "Amlodipine 10 mg",
-    "KFA008": "Ibuprofen 400 mg",
-    "KFA009": "Cetirizine 10 mg",
-    "KFA010": "Salbutamol tablet 2 mg",
-    "KFA011": "Prednisone 5 mg",
-    "KFA012": "Ranitidine 150 mg",
-    "KFA013": "ORS Zinc Combination",
-    "KFA014": "Azithromycin 500 mg",
-    "KFA021": "Salbutamol inhaler",
-    "KFA022": "Bromhexine 8 mg",
-    "KFA023": "Antacid syrup",
-    "KFA024": "Loperamide 2 mg",
-    "KFA025": "ORS pediatric sachet",
-    "KFA026": "Ambroxol 30 mg",
-    "KFA027": "Ketorolac injeksi 30 mg",
-    "KFA028": "Dexamethasone injeksi 5 mg",
-    "KFA030": "Ciprofloxacin 500 mg",
-    "KFA031": "Chlorpheniramine Maleate 4 mg",
-    "KFA033": "Mefenamic Acid 500 mg",
-    "KFA034": "Omeprazole injeksi 40 mg",
-    "KFA035": "Insulin regular injeksi",
-    "KFA036": "Insulin glargine",
-    "KFA037": "Magnesium Hydroxide",
-    "KFA038": "ORS + Probiotic sachet",
-    "KFA039": "Amoxicillin-Clavulanic Acid 625 mg",
-    "KFA040": "Levofloxacin 500 mg",
-}
-
-# ================================================================
-# HELPERS
-# ================================================================
-def generate_nik(gender: str):
-    """Generate Indonesian NIK"""
-    prov = random.randint(11, 99)
-    kab = random.randint(1, 99)
-    kec = random.randint(1, 99)
-    dob = fake.date_of_birth(minimum_age=18, maximum_age=75)
-    dd = dob.day
-    mm = dob.month
-    yy = dob.year % 100
-    if gender == "F":
-        dd += 40
-    urut = random.randint(1, 9999)
-    nik = f"{prov:02d}{kab:02d}{kec:02d}{dd:02d}{mm:02d}{yy:02d}{urut:04d}"
-    return nik, dob
-
-# ================================================================
-# FRAUD INJECTION
-# ================================================================
-def inject_fraud(dx_code, procedure, drug, vitamin, proc_cost, drug_cost, vit_cost):
-    """Inject realistic fraud patterns"""
-    r = random.random()
-    fraud_type = None
-    is_fraud = False
+def load_master_data():
+    """Load all master data from MySQL"""
+    conn = mysql.connector.connect(**DB_CONFIG)
+    cur = conn.cursor(dictionary=True)
     
-    # 1. Procedure Mismatch (15%)
-    if r < 0.15:
-        wrong_procedures = [p for p in MASTER_ICD9 if p not in COMPAT_RULES.get(dx_code, {}).get("procedures", [])]
-        if wrong_procedures:
-            wrong_proc = random.choice(wrong_procedures)
-            procedure = (wrong_proc, ICD9_DESCRIPTIONS.get(wrong_proc, "Unknown procedure"))
-            fraud_type = "procedure_mismatch"
-            is_fraud = True
+    # Load ICD-10 (Diagnoses)
+    cur.execute("SELECT code, description FROM master_icd10")
+    master_icd10 = {row["code"]: row["description"] for row in cur.fetchall()}
     
-    # 2. Drug Mismatch (15%)
-    elif r < 0.30:
-        wrong_drugs = ["KFA003", "KFA027", "KFA028", "KFA035", "KFA040"]
-        wrong_drug = random.choice(wrong_drugs)
-        drug = (wrong_drug, DRUG_DESCRIPTIONS.get(wrong_drug, "Unknown drug"))
-        drug_cost *= random.uniform(1.5, 3.0)
-        fraud_type = "drug_mismatch"
-        is_fraud = True
+    # Load ICD-9 (Procedures)
+    cur.execute("SELECT code, description FROM master_icd9")
+    master_icd9 = {row["code"]: row["description"] for row in cur.fetchall()}
     
-    # 3. Vitamin Mismatch (12%)
-    elif r < 0.42:
-        wrong_vitamins = ["Vitamin C Effervescent 1000 mg", "Multivitamin Adult", "Fish Oil Omega-3"]
-        vitamin = random.choice(wrong_vitamins)
-        vit_cost *= random.uniform(1.2, 2.0)
-        fraud_type = "vitamin_mismatch"
-        is_fraud = True
+    # Load Drugs
+    cur.execute("SELECT code, name FROM master_drug")
+    master_drug = {row["code"]: row["name"] for row in cur.fetchall()}
     
-    # 4. Upcoding (20%)
-    elif r < 0.62:
-        proc_cost *= random.uniform(2.0, 5.0)
-        drug_cost *= random.uniform(1.5, 4.0)
-        vit_cost *= random.uniform(1.3, 2.5)
-        fraud_type = "upcoding"
-        is_fraud = True
+    # Load Vitamins
+    cur.execute("SELECT name FROM master_vitamin")
+    master_vitamin = [row["name"] for row in cur.fetchall()]
     
-    # 5. Phantom Billing (18%)
-    elif r < 0.80:
-        proc_cost += random.randint(200_000, 800_000)
-        drug_cost += random.randint(100_000, 400_000)
-        fraud_type = "phantom_billing"
-        is_fraud = True
+    # Load Clinical Rules
+    print("  Loading clinical rules...")
     
-    # 6. Multi-fraud (20%)
-    else:
-        wrong_proc = random.choice([p for p in MASTER_ICD9 if p not in COMPAT_RULES.get(dx_code, {}).get("procedures", [])])
-        procedure = (wrong_proc, ICD9_DESCRIPTIONS.get(wrong_proc, "Procedure"))
-        
-        wrong_drug = random.choice(["KFA003", "KFA027", "KFA040"])
-        drug = (wrong_drug, DRUG_DESCRIPTIONS.get(wrong_drug, "Drug"))
-        
-        vitamin = random.choice(["Multivitamin Adult", "Fish Oil Omega-3"])
-        
-        proc_cost *= random.uniform(3.0, 8.0)
-        drug_cost *= random.uniform(2.0, 5.0)
-        vit_cost *= random.uniform(1.5, 3.0)
-        
-        fraud_type = "multi_fraud"
-        is_fraud = True
+    # Diagnosis → Procedure rules
+    cur.execute("""
+        SELECT icd10_code, icd9_code, is_mandatory, severity_level 
+        FROM clinical_rule_dx_procedure
+    """)
+    dx_proc_rules = defaultdict(list)
+    for row in cur.fetchall():
+        dx_proc_rules[row["icd10_code"]].append({
+            "code": row["icd9_code"],
+            "mandatory": bool(row["is_mandatory"]),
+            "severity": row["severity_level"]
+        })
     
-    return procedure, drug, vitamin, proc_cost, drug_cost, vit_cost, fraud_type, is_fraud
-
-# ================================================================
-# GENERATE CLAIM
-# ================================================================
-def generate_claim():
-    """Generate single claim record"""
-    gender = random.choice(["M", "F"])
-    nik, dob = generate_nik(gender)
-    name = fake.name_male() if gender == "M" else fake.name_female()
-    address = fake.address().replace("\n", ", ")
-    phone = fake.phone_number()
-    doctor = fake.name()
-    department = random.choice(["Poli Umum", "Poli Anak", "Poli Dalam", "IGD"])
-    visit_date = fake.date_between(start_date='-2y', end_date='today')
+    # Diagnosis → Drug rules
+    cur.execute("""
+        SELECT icd10_code, drug_code, is_mandatory, severity_level 
+        FROM clinical_rule_dx_drug
+    """)
+    dx_drug_rules = defaultdict(list)
+    for row in cur.fetchall():
+        dx_drug_rules[row["icd10_code"]].append({
+            "code": row["drug_code"],
+            "mandatory": bool(row["is_mandatory"]),
+            "severity": row["severity_level"]
+        })
     
-    # Select diagnosis
-    dx_codes = list(COMPAT_RULES.keys())
-    dx_code = random.choice(dx_codes)
-    dx_desc = ICD10_DESCRIPTIONS.get(dx_code, "Unknown diagnosis")
+    # Diagnosis → Vitamin rules
+    cur.execute("""
+        SELECT icd10_code, vitamin_name, is_mandatory, severity_level 
+        FROM clinical_rule_dx_vitamin
+    """)
+    dx_vit_rules = defaultdict(list)
+    for row in cur.fetchall():
+        dx_vit_rules[row["icd10_code"]].append({
+            "name": row["vitamin_name"],
+            "mandatory": bool(row["is_mandatory"]),
+            "severity": row["severity_level"]
+        })
     
-    # Get compatible items
-    allowed = COMPAT_RULES[dx_code]
+    cur.close()
+    conn.close()
     
-    # Clean claim
-    procedure_code = random.choice(allowed["procedures"])
-    procedure = (procedure_code, ICD9_DESCRIPTIONS.get(procedure_code, "Procedure"))
+    # Build complete clinical rules dictionary
+    clinical_rules = {}
+    all_diagnoses = list(master_icd10.keys())
     
-    drug_code = random.choice(allowed["drugs"])
-    drug = (drug_code, DRUG_DESCRIPTIONS.get(drug_code, "Drug"))
+    for dx_code in all_diagnoses:
+        clinical_rules[dx_code] = {
+            "description": master_icd10[dx_code],
+            "procedures": [r["code"] for r in dx_proc_rules.get(dx_code, [])],
+            "mandatory_procedures": [r["code"] for r in dx_proc_rules.get(dx_code, []) if r["mandatory"]],
+            "drugs": [r["code"] for r in dx_drug_rules.get(dx_code, [])],
+            "mandatory_drugs": [r["code"] for r in dx_drug_rules.get(dx_code, []) if r["mandatory"]],
+            "vitamins": [r["name"] for r in dx_vit_rules.get(dx_code, [])],
+        }
     
-    vitamin = random.choice(allowed["vitamins"])
-    
-    # Base costs
-    proc_cost = random.randint(50_000, 200_000)
-    drug_cost = random.randint(15_000, 120_000)
-    vit_cost = random.randint(8_000, 60_000)
-    
-    # Inject fraud
-    fraud_type = None
-    is_fraud = False
-    
-    if random.random() < FRAUD_RATIO:
-        procedure, drug, vitamin, proc_cost, drug_cost, vit_cost, fraud_type, is_fraud = inject_fraud(
-            dx_code, procedure, drug, vitamin, proc_cost, drug_cost, vit_cost
-        )
-    
-    total_claim = proc_cost + drug_cost + vit_cost
-    
-    # Approval logic
-    approve = True
-    decline_reasons = []
-    
-    if procedure[0] not in allowed["procedures"]:
-        approve = False
-        decline_reasons.append("incompatible_procedure")
-    
-    if drug[0] not in allowed["drugs"]:
-        approve = False
-        decline_reasons.append("incompatible_drug")
-    
-    if vitamin not in allowed["vitamins"]:
-        approve = False
-        decline_reasons.append("incompatible_vitamin")
-    
-    if total_claim > 2_000_000:
-        approve = False
-        decline_reasons.append("exceeds_cost_limit")
-    
-    if dx_code == "J06" and drug[0] == "KFA003":
-        approve = False
-        decline_reasons.append("inappropriate_antibiotic")
-    
-    status = "approved" if approve else "declined"
+    print(f"  ✓ Loaded {len(master_icd10)} diagnoses")
+    print(f"  ✓ Loaded {len(master_icd9)} procedures")
+    print(f"  ✓ Loaded {len(master_drug)} drugs")
+    print(f"  ✓ Loaded {len(master_vitamin)} vitamins")
+    print(f"  ✓ Built clinical rules for {len(clinical_rules)} diagnoses")
     
     return {
-        "nik": nik,
-        "name": name,
-        "gender": gender,
-        "dob": dob,
-        "address": address,
-        "phone": phone,
-        "visit_date": visit_date,
-        "doctor": doctor,
-        "department": department,
-        "dx": (dx_code, dx_desc),
-        "procedure": procedure,
-        "drug": drug,
-        "vitamin": vitamin,
+        "icd10": master_icd10,
+        "icd9": master_icd9,
+        "drug": master_drug,
+        "vitamin": master_vitamin,
+        "clinical_rules": clinical_rules
+    }
+
+# Load master data
+MASTER_DATA = load_master_data()
+CLINICAL_RULES = MASTER_DATA["clinical_rules"]
+ALL_DIAGNOSES = list(MASTER_DATA["icd10"].keys())
+
+# Build "bad" items for fraud (items that don't match diagnosis)
+ALL_PROCEDURES = list(MASTER_DATA["icd9"].keys())
+ALL_DRUGS = list(MASTER_DATA["drug"].keys())
+ALL_VITAMINS = MASTER_DATA["vitamin"]
+
+print("\n[2/7] Building fraud pattern library...")
+
+# For each diagnosis, identify incompatible items
+INCOMPATIBLE_ITEMS = {}
+for dx_code in ALL_DIAGNOSES:
+    rules = CLINICAL_RULES[dx_code]
+    
+    # Items that are NOT allowed for this diagnosis
+    INCOMPATIBLE_ITEMS[dx_code] = {
+        "procedures": [p for p in ALL_PROCEDURES if p not in rules["procedures"]],
+        "drugs": [d for d in ALL_DRUGS if d not in rules["drugs"]],
+        "vitamins": [v for v in ALL_VITAMINS if v not in rules["vitamins"]],
+    }
+
+print(f"  ✓ Built incompatibility matrix for {len(INCOMPATIBLE_ITEMS)} diagnoses")
+
+# ==============================================================================
+# COST THRESHOLDS (Realistic BPJS ranges)
+# ==============================================================================
+COST_RANGES = {
+    "J06": {"proc": (50000, 150000), "drug": (20000, 80000), "vit": (10000, 30000)},  # Common cold
+    "K29": {"proc": (100000, 300000), "drug": (50000, 150000), "vit": (15000, 40000)},  # Gastritis
+    "E11": {"proc": (150000, 400000), "drug": (100000, 300000), "vit": (20000, 60000)},  # Diabetes
+    "I10": {"proc": (100000, 350000), "drug": (80000, 250000), "vit": (15000, 50000)},  # Hypertension
+    "J45": {"proc": (120000, 380000), "drug": (100000, 280000), "vit": (20000, 55000)},  # Asthma
+}
+
+# Default for unknown diagnoses
+DEFAULT_COST_RANGE = {"proc": (80000, 200000), "drug": (40000, 120000), "vit": (15000, 40000)}
+
+# ==============================================================================
+# PATIENT & DOCTOR POOLS
+# ==============================================================================
+print("\n[3/7] Creating patient and doctor pools...")
+
+class Pool:
+    def __init__(self, size, role="patient"):
+        self.people = []
+        for _ in range(size):
+            gender = random.choice(["M", "F"])
+            person = {
+                "id": str(uuid.uuid4())[:8],
+                "nik": self._gen_nik(gender),
+                "name": fake.name_male() if gender == "M" else fake.name_female(),
+                "gender": gender,
+                "dob": fake.date_of_birth(minimum_age=18, maximum_age=80),
+                "address": fake.address().replace("\n", ", "),
+                "phone": fake.phone_number(),
+                # Risk profiles (reduced from original)
+                "is_abuser": random.random() < 0.03 if role == "patient" else False,  # 3% (was 5%)
+                "is_fraudster": random.random() < 0.05 if role == "doctor" else False,  # 5% (was 10%)
+                # Chronic conditions
+                "chronic_dx": random.choice(["E11", "I10"]) if role == "patient" and random.random() < 0.25 else None,
+                # Claim history
+                "claim_count": 0,
+                "last_visit": None,
+            }
+            self.people.append(person)
+    
+    def _gen_nik(self, gender):
+        prov = random.randint(11, 99)
+        day = random.randint(1, 31)
+        if gender == "F":
+            day += 40
+        month = random.randint(1, 12)
+        year = random.randint(50, 99)
+        return f"{prov}{random.randint(10,99)}{day:02d}{month:02d}{year:02d}{random.randint(1000,9999)}"
+    
+    def get_random(self):
+        return random.choice(self.people)
+    
+    def get_chronic_patient(self, dx_code):
+        """Get a patient with specific chronic condition"""
+        candidates = [p for p in self.people if p["chronic_dx"] == dx_code]
+        return random.choice(candidates) if candidates else self.get_random()
+
+# Initialize pools
+patients = Pool(1000, "patient")
+doctors = Pool(50, "doctor")
+
+print(f"  ✓ Created {len(patients.people)} patients")
+print(f"  ✓ Created {len(doctors.people)} doctors")
+print(f"  ✓ Patient abusers: {sum(1 for p in patients.people if p['is_abuser'])}")
+print(f"  ✓ Fraudster doctors: {sum(1 for d in doctors.people if d['is_fraudster'])}")
+
+# ==============================================================================
+# CLAIM GENERATION LOGIC
+# ==============================================================================
+print("\n[4/7] Preparing claim generation engine...")
+
+def calculate_fraud_probability(patient, doctor, dx_code):
+    """Calculate fraud probability with caps"""
+    base_prob = BASE_FRAUD_RATIO  # 15%
+    
+    # Patient risk
+    if patient["is_abuser"]:
+        base_prob += 0.10  # +10% (reduced from 20%)
+    
+    # Doctor risk
+    if doctor["is_fraudster"]:
+        base_prob += 0.10  # +10% (reduced from 30%)
+    
+    # Frequency risk (if patient has many recent claims)
+    if patient["claim_count"] > 10:
+        base_prob += 0.05  # +5% for high frequency
+    
+    # Cap at 30% max
+    return min(base_prob, 0.30)
+
+
+def select_valid_items(dx_code):
+    """Select clinically appropriate items for diagnosis"""
+    rules = CLINICAL_RULES[dx_code]
+    cost_range = COST_RANGES.get(dx_code, DEFAULT_COST_RANGE)
+    
+    # Procedures - must include mandatory
+    procedures = []
+    if rules["mandatory_procedures"]:
+        procedures.extend(rules["mandatory_procedures"])
+    
+    # Add optional procedures (50% chance)
+    optional_procs = [p for p in rules["procedures"] if p not in rules["mandatory_procedures"]]
+    if optional_procs and random.random() < 0.5:
+        procedures.append(random.choice(optional_procs))
+    
+    # Drugs - must include mandatory
+    drugs = []
+    if rules["mandatory_drugs"]:
+        drugs.extend(rules["mandatory_drugs"])
+    
+    # Add optional drugs (60% chance)
+    optional_drugs = [d for d in rules["drugs"] if d not in rules["mandatory_drugs"]]
+    if optional_drugs and random.random() < 0.6:
+        drugs.append(random.choice(optional_drugs))
+    
+    # Vitamins (30% chance)
+    vitamins = []
+    if rules["vitamins"] and random.random() < 0.3:
+        vitamins.append(random.choice(rules["vitamins"]))
+    
+    # Calculate costs
+    proc_cost = random.randint(*cost_range["proc"]) if procedures else 0
+    drug_cost = random.randint(*cost_range["drug"]) if drugs else 0
+    vit_cost = random.randint(*cost_range["vit"]) if vitamins else 0
+    
+    return {
+        "procedures": procedures,
+        "drugs": drugs,
+        "vitamins": vitamins,
         "proc_cost": proc_cost,
         "drug_cost": drug_cost,
         "vit_cost": vit_cost,
-        "total": total_claim,
-        "is_fraud": is_fraud,
-        "fraud_type": fraud_type,
-        "status": status,
-        "decline_reasons": ",".join(decline_reasons) if decline_reasons else None
     }
 
-# ================================================================
-# INSERT TO DB
-# ================================================================
-def insert(cursor, rec):
-    """Insert claim to database"""
-    cursor.execute("""
+
+def apply_fraud_pattern(items, dx_code, fraud_type):
+    """Apply specific fraud pattern"""
+    incompatible = INCOMPATIBLE_ITEMS[dx_code]
+    
+    if fraud_type == "clinical_mismatch":
+        # Replace with incompatible items
+        if items["procedures"] and incompatible["procedures"]:
+            if random.random() < 0.6:  # 60% chance to replace procedure
+                items["procedures"][0] = random.choice(incompatible["procedures"])
+        
+        if items["drugs"] and incompatible["drugs"]:
+            if random.random() < 0.7:  # 70% chance to replace drug
+                items["drugs"][0] = random.choice(incompatible["drugs"])
+        
+        if random.random() < 0.4:  # 40% chance to add incompatible vitamin
+            if incompatible["vitamins"]:
+                items["vitamins"] = [random.choice(incompatible["vitamins"])]
+    
+    elif fraud_type == "upcoding":
+        # Inflate costs by 2-5x
+        multiplier = random.uniform(2.0, 5.0)
+        items["proc_cost"] = int(items["proc_cost"] * multiplier)
+        items["drug_cost"] = int(items["drug_cost"] * multiplier)
+        items["vit_cost"] = int(items["vit_cost"] * multiplier)
+    
+    elif fraud_type == "phantom":
+        # Add expensive, unnecessary procedure
+        if incompatible["procedures"]:
+            phantom_proc = random.choice(incompatible["procedures"])
+            items["procedures"].append(phantom_proc)
+            items["proc_cost"] += random.randint(1000000, 2500000)  # Very expensive
+    
+    elif fraud_type == "duplicate":
+        # Duplicate existing items
+        if items["procedures"]:
+            items["procedures"].append(items["procedures"][0])
+            items["proc_cost"] *= 2
+        if items["drugs"]:
+            items["drugs"].append(items["drugs"][0])
+            items["drug_cost"] *= 2
+    
+    return items
+
+
+def generate_single_claim(visit_date, claim_number):
+    """Generate one realistic claim"""
+    
+    # Select patient
+    # 25% chance to select chronic patient with matching diagnosis
+    if random.random() < 0.25:
+        dx_code = random.choice(["E11", "I10"])  # Chronic diagnoses
+        patient = patients.get_chronic_patient(dx_code)
+    else:
+        patient = patients.get_random()
+        # If patient has chronic condition, 70% chance they visit for that
+        if patient["chronic_dx"] and random.random() < 0.7:
+            dx_code = patient["chronic_dx"]
+        else:
+            dx_code = random.choice(ALL_DIAGNOSES)
+    
+    # Select doctor
+    doctor = doctors.get_random()
+    
+    # Calculate fraud probability
+    fraud_prob = calculate_fraud_probability(patient, doctor, dx_code)
+    is_fraud = random.random() < fraud_prob
+    
+    # Select items (valid by default)
+    items = select_valid_items(dx_code)
+    
+    fraud_type = None
+    if is_fraud:
+        # Select fraud type
+        fraud_type = random.choice([
+            "clinical_mismatch",  # 35%
+            "upcoding",           # 35%
+            "phantom",            # 20%
+            "duplicate",          # 10%
+        ])
+        items = apply_fraud_pattern(items, dx_code, fraud_type)
+    
+    # Calculate total
+    total_cost = items["proc_cost"] + items["drug_cost"] + items["vit_cost"]
+    
+    # Determine status
+    # Fraud: 75% declined, 25% slip through (approved)
+    # Legitimate: 95% approved, 5% incorrectly declined
+    if is_fraud:
+        status = "declined" if random.random() < 0.75 else "approved"
+    else:
+        status = "approved" if random.random() < 0.95 else "declined"
+    
+    # Update patient history
+    patient["claim_count"] += 1
+    patient["last_visit"] = visit_date
+    
+    return {
+        "claim_number": claim_number,
+        "patient": patient,
+        "doctor": doctor,
+        "visit_date": visit_date,
+        "dx_code": dx_code,
+        "dx_desc": CLINICAL_RULES[dx_code]["description"],
+        "items": items,
+        "total_cost": total_cost,
+        "status": status,
+        "is_fraud": is_fraud,
+        "fraud_type": fraud_type,
+    }
+
+
+# ==============================================================================
+# DATABASE INSERTION
+# ==============================================================================
+def insert_claim_to_db(cursor, claim_data):
+    """Insert claim into MySQL database"""
+    p = claim_data["patient"]
+    d = claim_data["doctor"]
+    items = claim_data["items"]
+    
+    # Determine department based on diagnosis
+    dept_mapping = {
+        "J06": "Poli Umum",
+        "J45": "Poli Paru",
+        "K29": "Poli Penyakit Dalam",
+        "E11": "Poli Penyakit Dalam",
+        "I10": "Poli Jantung",
+    }
+    dept = dept_mapping.get(claim_data["dx_code"], "Poli Umum")
+    
+    # 1. Insert header
+    sql_header = """
         INSERT INTO claim_header (
             patient_nik, patient_name, patient_gender, patient_dob,
             patient_address, patient_phone,
             visit_date, visit_type, doctor_name, department,
             total_procedure_cost, total_drug_cost, total_vitamin_cost,
             total_claim_amount, status
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,'rawat jalan',%s,%s,%s,%s,%s,%s,%s)
-    """, (
-        rec["nik"], rec["name"], rec["gender"], rec["dob"],
-        rec["address"], rec["phone"],
-        rec["visit_date"], rec["doctor"], rec["department"],
-        rec["proc_cost"], rec["drug_cost"], rec["vit_cost"],
-        rec["total"], rec["status"]
-    ))
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """
     
+    vals_header = (
+        p["nik"], p["name"], p["gender"], p["dob"],
+        p["address"], p["phone"],
+        claim_data["visit_date"], "rawat jalan", d["name"], dept,
+        items["proc_cost"], items["drug_cost"], items["vit_cost"],
+        claim_data["total_cost"], claim_data["status"]
+    )
+    
+    cursor.execute(sql_header, vals_header)
     claim_id = cursor.lastrowid
     
-    cursor.execute("""
+    # 2. Insert diagnosis
+    sql_diag = """
         INSERT INTO claim_diagnosis (claim_id, icd10_code, icd10_description, is_primary)
-        VALUES (%s,%s,%s,1)
-    """, (claim_id, rec["dx"][0], rec["dx"][1]))
+        VALUES (%s, %s, %s, 1)
+    """
+    cursor.execute(sql_diag, (claim_id, claim_data["dx_code"], claim_data["dx_desc"]))
     
-    cursor.execute("""
-        INSERT INTO claim_procedure (claim_id, icd9_code, icd9_description, quantity, procedure_date)
-        VALUES (%s,%s,%s,1,%s)
-    """, (claim_id, rec["procedure"][0], rec["procedure"][1], rec["visit_date"]))
+    # 3. Insert procedures
+    for proc_code in items["procedures"]:
+        proc_desc = MASTER_DATA["icd9"].get(proc_code, "Unknown procedure")
+        sql_proc = """
+            INSERT INTO claim_procedure (claim_id, icd9_code, icd9_description, quantity, procedure_date, cost)
+            VALUES (%s, %s, %s, 1, %s, %s)
+        """
+        # Distribute cost across procedures
+        proc_unit_cost = items["proc_cost"] // len(items["procedures"]) if items["procedures"] else 0
+        cursor.execute(sql_proc, (claim_id, proc_code, proc_desc, claim_data["visit_date"], proc_unit_cost))
     
-    cursor.execute("""
-        INSERT INTO claim_drug (claim_id, drug_code, drug_name, dosage, frequency, route, days, cost)
-        VALUES (%s,%s,%s,'1 tablet','2x sehari','oral',3,%s)
-    """, (claim_id, rec["drug"][0], rec["drug"][1], rec["drug_cost"]))
+    # 4. Insert drugs
+    for drug_code in items["drugs"]:
+        drug_name = MASTER_DATA["drug"].get(drug_code, "Unknown drug")
+        sql_drug = """
+            INSERT INTO claim_drug (claim_id, drug_code, drug_name, cost)
+            VALUES (%s, %s, %s, %s)
+        """
+        # Distribute cost across drugs
+        drug_unit_cost = items["drug_cost"] // len(items["drugs"]) if items["drugs"] else 0
+        cursor.execute(sql_drug, (claim_id, drug_code, drug_name, drug_unit_cost))
     
-    cursor.execute("""
-        INSERT INTO claim_vitamin (claim_id, vitamin_name, dosage, days, cost)
-        VALUES (%s,%s,'1 tablet',3,%s)
-    """, (claim_id, rec["vitamin"], rec["vit_cost"]))
+    # 5. Insert vitamins
+    for vit_name in items["vitamins"]:
+        sql_vit = """
+            INSERT INTO claim_vitamin (claim_id, vitamin_name, cost)
+            VALUES (%s, %s, %s)
+        """
+        # Distribute cost across vitamins
+        vit_unit_cost = items["vit_cost"] // len(items["vitamins"]) if items["vitamins"] else 0
+        cursor.execute(sql_vit, (claim_id, vit_name, vit_unit_cost))
     
     return claim_id
 
-# ================================================================
-# MAIN
-# ================================================================
+
+# ==============================================================================
+# MAIN EXECUTION
+# ==============================================================================
 def main():
-    print("\n" + "=" * 70)
-    print("SYNTHETIC FRAUD DETECTION DATA GENERATOR")
-    print("=" * 70)
+    print("\n[5/7] Generating claim timestamps...")
     
-    # Test DB connection
-    print("\nTesting database connection...")
+    # Generate timestamps (sorted chronologically)
+    total_seconds = int((END_DATE - START_DATE).total_seconds())
+    timestamps = sorted([
+        START_DATE + timedelta(seconds=random.randint(0, total_seconds))
+        for _ in range(TOTAL_CLAIMS)
+    ])
+    
+    print(f"  ✓ Generated {len(timestamps):,} timestamps")
+    print(f"  ✓ Date range: {timestamps[0].date()} to {timestamps[-1].date()}")
+    
+    print("\n[6/7] Connecting to database...")
     try:
         conn = mysql.connector.connect(**DB_CONFIG)
         cursor = conn.cursor()
-        print("✓ Database connected successfully")
+        print(f"  ✓ Connected to {DB_CONFIG['host']}")
     except Exception as e:
-        print(f"✗ Database connection failed: {e}")
+        print(f"  ✗ Connection failed: {e}")
         return
     
-    # Open CSV
-    csv_file = open("synthetic_fraud_labels.csv", "w", newline="", encoding="utf-8")
-    writer = csv.writer(csv_file)
-    writer.writerow([
-        "claim_id", "is_fraud", "fraud_type", "icd10", "department",
-        "visit_date", "total_amount", "status", "decline_reasons"
-    ])
+    print(f"\n[7/7] Generating and inserting {TOTAL_CLAIMS:,} claims...")
+    print("  (This may take several minutes...)\n")
     
-    print(f"\nGenerating {TOTAL_CLAIMS:,} claims...")
-    print("Progress: ", end="", flush=True)
+    stats = {
+        "total": 0,
+        "fraud": 0,
+        "legitimate": 0,
+        "approved": 0,
+        "declined": 0,
+        "fraud_types": defaultdict(int),
+    }
     
-    fraud_count = 0
-    approved_count = 0
+    start_time = datetime.now()
     
-    for i in range(TOTAL_CLAIMS):
-        rec = generate_claim()
-        claim_id = insert(cursor, rec)
+    for i, ts in enumerate(timestamps, 1):
+        claim_data = generate_single_claim(ts, i)
+        insert_claim_to_db(cursor, claim_data)
         
-        if rec["is_fraud"]:
-            fraud_count += 1
-        if rec["status"] == "approved":
-            approved_count += 1
+        # Update stats
+        stats["total"] += 1
+        if claim_data["is_fraud"]:
+            stats["fraud"] += 1
+            if claim_data["fraud_type"]:
+                stats["fraud_types"][claim_data["fraud_type"]] += 1
+        else:
+            stats["legitimate"] += 1
         
-        writer.writerow([
-            claim_id,
-            1 if rec["is_fraud"] else 0,
-            rec["fraud_type"] if rec["fraud_type"] else "",
-            rec["dx"][0],
-            rec["department"],
-            rec["visit_date"],
-            rec["total"],
-            rec["status"],
-            rec["decline_reasons"] if rec["decline_reasons"] else ""
-        ])
+        if claim_data["status"] == "approved":
+            stats["approved"] += 1
+        else:
+            stats["declined"] += 1
         
-        # Commit in batches
-        if (i + 1) % BATCH_COMMIT == 0:
+        # Commit every 100 claims
+        if i % 100 == 0:
             conn.commit()
-            progress = (i + 1) / TOTAL_CLAIMS * 100
-            print(f"\rProgress: {i + 1:,} / {TOTAL_CLAIMS:,} ({progress:.1f}%) - Fraud: {fraud_count:,}", end="", flush=True)
+            elapsed = (datetime.now() - start_time).total_seconds()
+            rate = i / elapsed if elapsed > 0 else 0
+            eta = (TOTAL_CLAIMS - i) / rate if rate > 0 else 0
+            
+            print(f"  Progress: {i:,}/{TOTAL_CLAIMS:,} ({i/TOTAL_CLAIMS*100:.1f}%) | "
+                  f"Rate: {rate:.0f} claims/sec | ETA: {eta/60:.1f} min", end="\r")
     
     # Final commit
     conn.commit()
-    csv_file.close()
     cursor.close()
     conn.close()
     
-    print("\n\n" + "=" * 70)
-    print("GENERATION COMPLETE")
-    print("=" * 70)
-    print(f"Total claims: {TOTAL_CLAIMS:,}")
-    print(f"Fraud claims: {fraud_count:,} ({fraud_count/TOTAL_CLAIMS*100:.1f}%)")
-    print(f"Approved: {approved_count:,} ({approved_count/TOTAL_CLAIMS*100:.1f}%)")
-    print(f"Declined: {TOTAL_CLAIMS - approved_count:,}")
-    print(f"\nLabels saved to: synthetic_fraud_labels.csv")
-    print("=" * 70)
+    elapsed_total = (datetime.now() - start_time).total_seconds()
+    
+    # Print summary
+    print("\n\n" + "=" * 80)
+    print("DATA GENERATION COMPLETE")
+    print("=" * 80)
+    
+    print(f"\n📊 Generation Statistics:")
+    print(f"  Total claims:       {stats['total']:,}")
+    print(f"  Legitimate:         {stats['legitimate']:,} ({stats['legitimate']/stats['total']*100:.1f}%)")
+    print(f"  Fraud:              {stats['fraud']:,} ({stats['fraud']/stats['total']*100:.1f}%)")
+    print(f"  Approved:           {stats['approved']:,} ({stats['approved']/stats['total']*100:.1f}%)")
+    print(f"  Declined:           {stats['declined']:,} ({stats['declined']/stats['total']*100:.1f}%)")
+    
+    print(f"\n🚨 Fraud Type Distribution:")
+    for fraud_type, count in sorted(stats['fraud_types'].items(), key=lambda x: x[1], reverse=True):
+        pct = count / stats['fraud'] * 100 if stats['fraud'] > 0 else 0
+        print(f"  {fraud_type:20s}: {count:,} ({pct:.1f}%)")
+    
+    print(f"\n⏱️  Performance:")
+    print(f"  Total time:         {elapsed_total/60:.1f} minutes")
+    print(f"  Average rate:       {stats['total']/elapsed_total:.1f} claims/second")
+    
+    print("\n✅ Data successfully generated and inserted into MySQL!")
+    print("=" * 80)
+
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n\nGeneration interrupted by user")
-    except Exception as e:
-        print(f"\n\nERROR: {e}")
-        import traceback
-        traceback.print_exc()
+    main()
