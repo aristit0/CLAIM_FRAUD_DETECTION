@@ -492,7 +492,7 @@ export default function SubmitClaimPage() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md-grid-cols-2 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label>Doctor Name *</Label>
                   <Input
@@ -546,12 +546,20 @@ export default function SubmitClaimPage() {
                 </div>
                 <div className="space-y-2">
                   <Label>Secondary Diagnosis</Label>
-                  <Select value={formData.diagnosis_secondary} onValueChange={(v) => handleInputChange('diagnosis_secondary', v)}>
+                  <Select
+                    value={formData.diagnosis_secondary || "none"}
+                    onValueChange={(v) =>
+                      handleInputChange(
+                        "diagnosis_secondary",
+                        v === "none" ? "" : v
+                      )
+                    }
+                  >
                     <SelectTrigger>
                       <SelectValue placeholder="Optional" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">(None)</SelectItem>
+                      <SelectItem value="none">(None)</SelectItem>
                       {ICD10_DATA.map(d => (
                         <SelectItem key={d.code} value={d.code}>
                           {d.code} - {d.description}
