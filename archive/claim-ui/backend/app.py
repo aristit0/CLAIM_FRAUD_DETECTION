@@ -9,16 +9,15 @@ from datetime import timedelta
 import mysql.connector
 from functools import wraps
 import os
-import math
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'supersecretkey_claimflow_2025')
 app.permanent_session_lifetime = timedelta(hours=6)
 
 # CORS untuk React frontend
-CORS(app, supports_credentials=True, origins=['http://localhost:2221', 'http://localhost:5173', 'http://127.0.0.1:2221'])
+CORS(app, supports_credentials=True, origins=['http://localhost:2221', 'http://localhost:5173'])
 
-# Database config
+# Database config dari environment
 DB_CONFIG = {
     'host': os.environ.get('DB_HOST', 'cdpmsi.tomodachis.org'),
     'user': os.environ.get('DB_USER', 'cloudera'),
@@ -40,9 +39,8 @@ def login_required(f):
     """Decorator to check if user is logged in"""
     @wraps(f)
     def wrapper(*args, **kwargs):
-        # For development, skip auth check
-        # if 'user' not in session:
-        #     return jsonify({'error': 'Unauthorized'}), 401
+        if 'user' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
         return f(*args, **kwargs)
     return wrapper
 
@@ -122,7 +120,7 @@ def get_master_data():
 @app.route('/api/claims', methods=['GET'])
 @login_required
 def list_claims():
-    """Get paginated list of claims - ALL STATUSES"""
+    """Get paginated list of claims"""
     try:
         page = int(request.args.get('page', 1))
         limit = int(request.args.get('limit', 10))
@@ -131,15 +129,16 @@ def list_claims():
         db = get_db()
         cursor = db.cursor(dictionary=True)
         
-        # ✅ FIXED: Get total count for ALL claims (not just pending)
-        cursor.execute("SELECT COUNT(*) AS total FROM claim_header")
+        # Get total count
+        cursor.execute("SELECT COUNT(*) AS total FROM claim_header WHERE status='pending'")
         total = cursor.fetchone()['total']
         
-        # ✅ FIXED: Get ALL claims (not just pending)
+        # Get claims
         cursor.execute("""
             SELECT claim_id, patient_name, patient_nik, total_claim_amount,
                    status, created_at
             FROM claim_header
+            WHERE status='pending'
             ORDER BY claim_id DESC
             LIMIT %s OFFSET %s
         """, (limit, offset))
@@ -149,22 +148,19 @@ def list_claims():
         for c in claims:
             if c.get('created_at'):
                 c['created_at'] = c['created_at'].isoformat()
-            # Convert Decimal to float for JSON serialization
-            if c.get('total_claim_amount'):
-                c['total_claim_amount'] = float(c['total_claim_amount'])
         
         cursor.close()
         db.close()
         
+        import math
         return jsonify({
             'claims': claims,
             'page': page,
             'limit': limit,
             'total': total,
-            'total_pages': math.ceil(total / limit) if total > 0 else 1
+            'total_pages': math.ceil(total / limit)
         })
     except Exception as e:
-        print(f"Error listing claims: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -174,8 +170,6 @@ def submit_claim():
     """Submit a new claim"""
     try:
         data = request.json
-        print(f"Received claim data: {data}")
-        
         db = get_db()
         cursor = db.cursor()
         
@@ -184,8 +178,6 @@ def submit_claim():
         total_drug = sum(float(d.get('cost', 0)) for d in data.get('drugs', []))
         total_vitamin = sum(float(v.get('cost', 0)) for v in data.get('vitamins', []))
         total_claim = total_procedure + total_drug + total_vitamin
-        
-        print(f"Totals - Procedure: {total_procedure}, Drug: {total_drug}, Vitamin: {total_vitamin}, Total: {total_claim}")
         
         # Insert claim header
         cursor.execute("""
@@ -206,7 +198,6 @@ def submit_claim():
         ))
         db.commit()
         claim_id = cursor.lastrowid
-        print(f"Created claim_id: {claim_id}")
         
         # Get ICD10 descriptions
         cursor.execute("SELECT code, description FROM master_icd10")
@@ -221,12 +212,11 @@ def submit_claim():
         drug_map = {r[0]: r[1] for r in cursor.fetchall()}
         
         # Insert diagnosis
-        dx_primary = data.get('diagnosis_primary')
-        if dx_primary:
-            cursor.execute("""
-                INSERT INTO claim_diagnosis (claim_id, icd10_code, icd10_description, is_primary)
-                VALUES (%s,%s,%s,1)
-            """, (claim_id, dx_primary, icd10_map.get(dx_primary, '')))
+        dx_primary = data['diagnosis_primary']
+        cursor.execute("""
+            INSERT INTO claim_diagnosis (claim_id, icd10_code, icd10_description, is_primary)
+            VALUES (%s,%s,%s,1)
+        """, (claim_id, dx_primary, icd10_map.get(dx_primary, '')))
         
         dx_secondary = data.get('diagnosis_secondary')
         if dx_secondary:
@@ -263,17 +253,12 @@ def submit_claim():
         cursor.close()
         db.close()
         
-        print(f"Claim {claim_id} submitted successfully!")
-        
         return jsonify({
             'success': True,
             'claim_id': claim_id,
             'total_claim': total_claim
         })
     except Exception as e:
-        print(f"Error submitting claim: {e}")
-        import traceback
-        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 
@@ -324,49 +309,5 @@ def health():
     return jsonify({'status': 'healthy', 'service': 'claimflow-api'})
 
 
-# ============================================
-# DB TEST
-# ============================================
-
-@app.route('/api/test-db', methods=['GET'])
-def test_db():
-    """Test database connection"""
-    try:
-        db = get_db()
-        cursor = db.cursor()
-        cursor.execute("SELECT 1")
-        cursor.fetchone()
-        
-        # Check tables
-        cursor.execute("SHOW TABLES")
-        tables = [t[0] for t in cursor.fetchall()]
-        
-        # Check claim_header count
-        cursor.execute("SELECT COUNT(*) FROM claim_header")
-        count = cursor.fetchone()[0]
-        
-        # Check status values
-        cursor.execute("SELECT DISTINCT status FROM claim_header")
-        statuses = [s[0] for s in cursor.fetchall()]
-        
-        cursor.close()
-        db.close()
-        
-        return jsonify({
-            'status': 'connected',
-            'tables': tables,
-            'claim_count': count,
-            'statuses': statuses
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
 if __name__ == '__main__':
-    print("=" * 50)
-    print("ClaimFlow API Server")
-    print("=" * 50)
-    print(f"Database: {DB_CONFIG['host']}/{DB_CONFIG['database']}")
-    print(f"Running on: http://0.0.0.0:2220")
-    print("=" * 50)
     app.run(host='0.0.0.0', port=2220, debug=True)
