@@ -5,9 +5,6 @@ Auto-deploys trained model without manual UI interaction
 
 Usage in CML Session:
   !python deploy/redeploy_model.py
-
-Or run directly:
-  python deploy/redeploy_model.py
 """
 
 import cmlapi
@@ -18,55 +15,70 @@ import json
 from datetime import datetime
 
 # ================================================================
-# CONFIGURATION - EDIT THESE VALUES
+# CONFIGURATION
 # ================================================================
 
 MODEL_NAME = "model_fraud_detection_claim"
 MODEL_DESCRIPTION = "Claim Fraud Detection Model - Auto-deployed"
 MODEL_FILE = "model.py"
 MODEL_FUNCTION = "predict"
-
-# Runtime settings
 KERNEL = "python3"
 
 # ================================================================
 # HELPER FUNCTIONS
 # ================================================================
 
-def get_latest_runtime(client, project_id, kernel="python3"):
-    """Get the latest compatible runtime for the project"""
+def get_runtime_identifier(client, project_id, model_id=None):
+    """Get runtime identifier - try multiple methods"""
+    
+    # Method 1: Get from existing successful build (BEST METHOD)
+    if model_id:
+        try:
+            print("  Trying to get runtime from existing build...")
+            builds = client.list_model_builds(project_id, model_id)
+            
+            for build in builds.model_builds:
+                if build.status == "built" and hasattr(build, 'runtime_identifier'):
+                    print(f"  ✓ Found runtime from build: {build.runtime_identifier}")
+                    return build.runtime_identifier
+        except Exception as e:
+            print(f"  Could not get from builds: {e}")
+    
+    # Method 2: List all runtimes without filter
     try:
-        # List available runtimes
-        runtimes = client.list_runtimes(
-            search_filter=json.dumps({
-                "kernel": kernel
-            })
-        )
+        print("  Listing all available runtimes...")
+        runtimes = client.list_runtimes()
         
-        if not runtimes.runtimes:
-            print("⚠ No runtimes found, using default")
-            return None
-        
-        # Find Python 3.10 runtime (Standard)
-        for runtime in runtimes.runtimes:
-            if "python3.10" in runtime.image_identifier.lower() and "standard" in runtime.edition.lower():
-                print(f"✓ Found runtime: {runtime.image_identifier}")
-                return runtime.image_identifier
-        
-        # Fallback to first available Python 3 runtime
-        for runtime in runtimes.runtimes:
-            if "python3" in runtime.image_identifier.lower():
-                print(f"✓ Using runtime: {runtime.image_identifier}")
-                return runtime.image_identifier
-        
-        # Use first runtime as last resort
-        runtime = runtimes.runtimes[0]
-        print(f"✓ Using default runtime: {runtime.image_identifier}")
-        return runtime.image_identifier
-        
+        if runtimes and hasattr(runtimes, 'runtimes') and runtimes.runtimes:
+            # Find Python 3.10 Standard
+            for runtime in runtimes.runtimes:
+                img = runtime.image_identifier.lower()
+                edition = runtime.edition.lower()
+                
+                if "python" in img and "3.10" in img and "standard" in edition:
+                    print(f"  ✓ Found runtime: {runtime.image_identifier}")
+                    return runtime.image_identifier
+            
+            # Fallback: any Python 3 Standard
+            for runtime in runtimes.runtimes:
+                img = runtime.image_identifier.lower()
+                edition = runtime.edition.lower()
+                
+                if "python" in img and "3" in img and "standard" in edition:
+                    print(f"  ✓ Using runtime: {runtime.image_identifier}")
+                    return runtime.image_identifier
+            
+            # Last resort: first runtime
+            runtime = runtimes.runtimes[0]
+            print(f"  ⚠ Using first available runtime: {runtime.image_identifier}")
+            return runtime.image_identifier
+    
     except Exception as e:
-        print(f"⚠ Could not get runtime list: {e}")
-        return None
+        print(f"  Could not list runtimes: {e}")
+    
+    # Method 3: Use common runtime identifier pattern
+    print("  ⚠ Using default runtime pattern...")
+    return "docker.repository.cloudera.com/cloudera/cdsw/ml-runtime-workbench-python3.10-standard:2024.02.1-b4"
 
 # ================================================================
 # DEPLOYMENT FUNCTION
@@ -103,16 +115,8 @@ def deploy_model():
     
     print("=" * 80)
     
-    # Get runtime identifier
-    print(f"\n[0/5] Getting runtime information...")
-    runtime_identifier = get_latest_runtime(client, project.id, KERNEL)
-    
-    if not runtime_identifier:
-        print("✗ Could not determine runtime. Please check CML UI for available runtimes.")
-        return False
-    
     # Step 1: Find or create model
-    print(f"\n[1/5] Searching for model '{MODEL_NAME}'...")
+    print(f"\n[1/6] Searching for model '{MODEL_NAME}'...")
     model = None
     
     try:
@@ -138,8 +142,18 @@ def deploy_model():
         print(f"✗ Error with model: {e}")
         return False
     
-    # Step 2: Build model
-    print(f"\n[2/5] Building model from '{MODEL_FILE}'...")
+    # Step 2: Get runtime identifier
+    print(f"\n[2/6] Getting runtime information...")
+    runtime_identifier = get_runtime_identifier(client, project.id, model.id)
+    
+    if not runtime_identifier:
+        print("✗ Could not determine runtime.")
+        return False
+    
+    print(f"✓ Runtime: {runtime_identifier[:60]}...")
+    
+    # Step 3: Build model
+    print(f"\n[3/6] Building model from '{MODEL_FILE}'...")
     
     model_file_path = os.path.join("/home/cdsw", MODEL_FILE)
     if not os.path.exists(model_file_path):
@@ -150,14 +164,13 @@ def deploy_model():
     print(f"✓ File found: {model_file_path}")
     
     try:
-        # Create build request WITH runtime identifier
         model_build_body = cmlapi.CreateModelBuildRequest(
             project_id=project.id,
             model_id=model.id,
             file_path=MODEL_FILE,
             function_name=MODEL_FUNCTION,
             kernel=KERNEL,
-            runtime_identifier=runtime_identifier  # ← REQUIRED!
+            runtime_identifier=runtime_identifier
         )
         
         model_build = client.create_model_build(
@@ -172,7 +185,7 @@ def deploy_model():
         # Wait for build
         start_time = time.time()
         while model_build.status not in ["built", "build failed"]:
-            if time.time() - start_time > 1800:  # 30 min timeout
+            if time.time() - start_time > 1800:
                 print("✗ Build timeout")
                 return False
             
@@ -186,7 +199,7 @@ def deploy_model():
                 model_build.id
             )
         
-        print()  # New line
+        print()
         
         if model_build.status == "build failed":
             print("✗ Build failed. Check CML UI for details.")
@@ -201,11 +214,10 @@ def deploy_model():
         traceback.print_exc()
         return False
     
-    # Step 3: Deploy model
-    print(f"\n[3/5] Deploying model...")
+    # Step 4: Deploy model
+    print(f"\n[4/6] Deploying model...")
     
     try:
-        # Create deployment request
         model_deployment_body = cmlapi.CreateModelDeploymentRequest(
             project_id=project.id,
             model_id=model.id,
@@ -222,10 +234,9 @@ def deploy_model():
         print(f"✓ Deployment started: {model_deployment.id}")
         print(f"  Waiting for deployment (max 30 minutes)...")
         
-        # Wait for deployment
         start_time = time.time()
         while model_deployment.status not in ["stopped", "failed", "deployed"]:
-            if time.time() - start_time > 1800:  # 30 min timeout
+            if time.time() - start_time > 1800:
                 print("✗ Deployment timeout")
                 return False
             
@@ -240,23 +251,23 @@ def deploy_model():
                 model_deployment.id
             )
         
-        print()  # New line
+        print()
         
         if model_deployment.status != "deployed":
-            print(f"✗ Deployment failed with status: {model_deployment.status}")
+            print(f"✗ Deployment failed: {model_deployment.status}")
             return False
         
         deploy_time = int(time.time() - start_time)
         print(f"✓ Deployed in {deploy_time}s")
     
     except Exception as e:
-        print(f"✗ Error deploying model: {e}")
+        print(f"✗ Error deploying: {e}")
         import traceback
         traceback.print_exc()
         return False
     
-    # Step 4: Stop old deployments
-    print(f"\n[4/5] Stopping old deployments...")
+    # Step 5: Stop old deployments
+    print(f"\n[5/6] Stopping old deployments...")
     
     try:
         builds = client.list_model_builds(project.id, model.id)
@@ -270,11 +281,9 @@ def deploy_model():
             )
             
             for deployment in deployments.model_deployments:
-                # Skip current deployment
                 if deployment.id == model_deployment.id:
                     continue
                 
-                # Stop if running
                 if deployment.status == "deployed":
                     client.stop_model_deployment(
                         project.id,
@@ -288,13 +297,13 @@ def deploy_model():
         if stopped_count > 0:
             print(f"✓ Stopped {stopped_count} old deployment(s)")
         else:
-            print("✓ No old deployments")
+            print("✓ No old deployments to stop")
     
     except Exception as e:
-        print(f"⚠ Warning: Could not stop old deployments: {e}")
+        print(f"⚠ Warning: {e}")
     
-    # Step 5: Test deployment
-    print(f"\n[5/5] Testing deployment...")
+    # Step 6: Test deployment
+    print(f"\n[6/6] Testing deployment...")
     
     try:
         deployment_info = client.get_model_deployment(
@@ -306,11 +315,9 @@ def deploy_model():
         
         print(f"✓ Status: {deployment_info.status}")
         
-        # Get access key
         if hasattr(deployment_info, 'access_key'):
             print(f"✓ Access Key: {deployment_info.access_key}")
             
-            # Test prediction
             test_payload = {
                 "claims": [{
                     "claim_id": "TEST001",
@@ -338,19 +345,18 @@ def deploy_model():
                 
                 result = json.loads(response)
                 if result.get("status") == "success":
-                    fraud_score = result['results'][0]['fraud_score']
                     print(f"✓ Test prediction successful!")
-                    print(f"  Fraud score: {fraud_score:.4f}")
+                    print(f"  Fraud score: {result['results'][0]['fraud_score']:.4f}")
                     print(f"  Fraud probability: {result['results'][0]['fraud_probability']}")
                 else:
-                    print(f"⚠ Test returned: {result}")
+                    print(f"⚠ Unexpected response: {result}")
             except Exception as e:
-                print(f"⚠ Could not test prediction: {e}")
+                print(f"⚠ Test failed: {e}")
         else:
-            print("⚠ No access key found in deployment info")
+            print("⚠ No access key available")
     
     except Exception as e:
-        print(f"⚠ Could not verify deployment: {e}")
+        print(f"⚠ Could not verify: {e}")
     
     # Success!
     print("\n" + "=" * 80)
@@ -361,7 +367,6 @@ def deploy_model():
     print(f"Build ID:       {model_build.id}")
     print(f"Deployment ID:  {model_deployment.id}")
     print(f"Status:         {model_deployment.status}")
-    print(f"Runtime:        {runtime_identifier}")
     print("=" * 80)
     
     return True
