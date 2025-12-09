@@ -739,7 +739,6 @@ print(f"  Duplicate claims (removed): {duplicates_removed:,}")
 
 # Sample size validation
 print(f"\n📈 Cost Anomaly Sample Size Validation:")
-small
 
 # ================================================================
 # 18. DATA QUALITY REPORT
