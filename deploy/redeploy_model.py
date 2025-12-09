@@ -30,6 +30,45 @@ MODEL_FUNCTION = "predict"
 KERNEL = "python3"
 
 # ================================================================
+# HELPER FUNCTIONS
+# ================================================================
+
+def get_latest_runtime(client, project_id, kernel="python3"):
+    """Get the latest compatible runtime for the project"""
+    try:
+        # List available runtimes
+        runtimes = client.list_runtimes(
+            search_filter=json.dumps({
+                "kernel": kernel
+            })
+        )
+        
+        if not runtimes.runtimes:
+            print("⚠ No runtimes found, using default")
+            return None
+        
+        # Find Python 3.10 runtime (Standard)
+        for runtime in runtimes.runtimes:
+            if "python3.10" in runtime.image_identifier.lower() and "standard" in runtime.edition.lower():
+                print(f"✓ Found runtime: {runtime.image_identifier}")
+                return runtime.image_identifier
+        
+        # Fallback to first available Python 3 runtime
+        for runtime in runtimes.runtimes:
+            if "python3" in runtime.image_identifier.lower():
+                print(f"✓ Using runtime: {runtime.image_identifier}")
+                return runtime.image_identifier
+        
+        # Use first runtime as last resort
+        runtime = runtimes.runtimes[0]
+        print(f"✓ Using default runtime: {runtime.image_identifier}")
+        return runtime.image_identifier
+        
+    except Exception as e:
+        print(f"⚠ Could not get runtime list: {e}")
+        return None
+
+# ================================================================
 # DEPLOYMENT FUNCTION
 # ================================================================
 
@@ -63,6 +102,14 @@ def deploy_model():
         return False
     
     print("=" * 80)
+    
+    # Get runtime identifier
+    print(f"\n[0/5] Getting runtime information...")
+    runtime_identifier = get_latest_runtime(client, project.id, KERNEL)
+    
+    if not runtime_identifier:
+        print("✗ Could not determine runtime. Please check CML UI for available runtimes.")
+        return False
     
     # Step 1: Find or create model
     print(f"\n[1/5] Searching for model '{MODEL_NAME}'...")
@@ -103,13 +150,14 @@ def deploy_model():
     print(f"✓ File found: {model_file_path}")
     
     try:
-        # Create build request (NO cpu/memory here - that's for deployment)
+        # Create build request WITH runtime identifier
         model_build_body = cmlapi.CreateModelBuildRequest(
             project_id=project.id,
             model_id=model.id,
             file_path=MODEL_FILE,
             function_name=MODEL_FUNCTION,
-            kernel=KERNEL
+            kernel=KERNEL,
+            runtime_identifier=runtime_identifier  # ← REQUIRED!
         )
         
         model_build = client.create_model_build(
@@ -149,6 +197,8 @@ def deploy_model():
     
     except Exception as e:
         print(f"✗ Error building model: {e}")
+        import traceback
+        traceback.print_exc()
         return False
     
     # Step 3: Deploy model
@@ -162,12 +212,11 @@ def deploy_model():
             build_id=model_build.id
         )
         
-        # Note: Fixed typo in docs - should be model_build.id not build.id
         model_deployment = client.create_model_deployment(
             model_deployment_body,
             project.id,
             model.id,
-            model_build.id  # <-- Fixed: was "build.id" in docs
+            model_build.id
         )
         
         print(f"✓ Deployment started: {model_deployment.id}")
@@ -202,6 +251,8 @@ def deploy_model():
     
     except Exception as e:
         print(f"✗ Error deploying model: {e}")
+        import traceback
+        traceback.print_exc()
         return False
     
     # Step 4: Stop old deployments
@@ -262,9 +313,9 @@ def deploy_model():
             # Test prediction
             test_payload = {
                 "claims": [{
-                    "claim_id": "TEST_001",
-                    "patient_dob": "1980-01-01",
-                    "visit_date": "2025-12-01",
+                    "claim_id": "TEST001",
+                    "patient_dob": "1985-06-15",
+                    "visit_date": "2024-12-04",
                     "visit_type": "rawat jalan",
                     "department": "Poli Umum",
                     "icd10_primary_code": "J06",
@@ -290,6 +341,7 @@ def deploy_model():
                     fraud_score = result['results'][0]['fraud_score']
                     print(f"✓ Test prediction successful!")
                     print(f"  Fraud score: {fraud_score:.4f}")
+                    print(f"  Fraud probability: {result['results'][0]['fraud_probability']}")
                 else:
                     print(f"⚠ Test returned: {result}")
             except Exception as e:
@@ -309,6 +361,7 @@ def deploy_model():
     print(f"Build ID:       {model_build.id}")
     print(f"Deployment ID:  {model_deployment.id}")
     print(f"Status:         {model_deployment.status}")
+    print(f"Runtime:        {runtime_identifier}")
     print("=" * 80)
     
     return True
