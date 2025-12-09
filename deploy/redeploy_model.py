@@ -28,9 +28,6 @@ MODEL_FUNCTION = "predict"
 
 # Runtime settings
 KERNEL = "python3"
-CPU = 2
-MEMORY = 4  # GB
-REPLICAS = 1
 
 # ================================================================
 # DEPLOYMENT FUNCTION
@@ -106,14 +103,13 @@ def deploy_model():
     print(f"✓ File found: {model_file_path}")
     
     try:
+        # Create build request (NO cpu/memory here - that's for deployment)
         model_build_body = cmlapi.CreateModelBuildRequest(
             project_id=project.id,
             model_id=model.id,
             file_path=MODEL_FILE,
             function_name=MODEL_FUNCTION,
-            kernel=KERNEL,
-            cpu=CPU,
-            memory=MEMORY
+            kernel=KERNEL
         )
         
         model_build = client.create_model_build(
@@ -157,28 +153,21 @@ def deploy_model():
     
     # Step 3: Deploy model
     print(f"\n[3/5] Deploying model...")
-    print(f"  CPU: {CPU}, Memory: {MEMORY}GB, Replicas: {REPLICAS}")
     
     try:
+        # Create deployment request
         model_deployment_body = cmlapi.CreateModelDeploymentRequest(
             project_id=project.id,
             model_id=model.id,
-            build_id=model_build.id,
-            cpu=CPU,
-            memory=MEMORY,
-            replicas=REPLICAS,
-            environment={
-                "MODEL_VERSION": model_build.id[:8],
-                "DEPLOYMENT_DATE": datetime.now().isoformat(),
-                "LOG_LEVEL": "INFO"
-            }
+            build_id=model_build.id
         )
         
+        # Note: Fixed typo in docs - should be model_build.id not build.id
         model_deployment = client.create_model_deployment(
             model_deployment_body,
             project.id,
             model.id,
-            model_build.id
+            model_build.id  # <-- Fixed: was "build.id" in docs
         )
         
         print(f"✓ Deployment started: {model_deployment.id}")
@@ -265,43 +254,51 @@ def deploy_model():
         )
         
         print(f"✓ Status: {deployment_info.status}")
-        print(f"✓ Access Key: {deployment_info.access_key}")
         
-        # Test prediction
-        test_payload = {
-            "claims": [{
-                "claim_id": "TEST_001",
-                "patient_dob": "1980-01-01",
-                "visit_date": "2025-12-01",
-                "visit_type": "rawat jalan",
-                "department": "Poli Umum",
-                "icd10_primary_code": "J06",
-                "procedures": ["89.02"],
-                "drugs": ["KFA001"],
-                "vitamins": ["Vitamin C 500 mg"],
-                "total_procedure_cost": 100000,
-                "total_drug_cost": 50000,
-                "total_vitamin_cost": 20000,
-                "total_claim_amount": 170000,
-                "patient_frequency_risk": 2
-            }]
-        }
-        
-        response = client.call_model(
-            deployment_info.access_key,
-            json.dumps(test_payload)
-        )
-        
-        result = json.loads(response)
-        if result.get("status") == "success":
-            fraud_score = result['results'][0]['fraud_score']
-            print(f"✓ Test prediction successful!")
-            print(f"  Fraud score: {fraud_score:.4f}")
+        # Get access key
+        if hasattr(deployment_info, 'access_key'):
+            print(f"✓ Access Key: {deployment_info.access_key}")
+            
+            # Test prediction
+            test_payload = {
+                "claims": [{
+                    "claim_id": "TEST_001",
+                    "patient_dob": "1980-01-01",
+                    "visit_date": "2025-12-01",
+                    "visit_type": "rawat jalan",
+                    "department": "Poli Umum",
+                    "icd10_primary_code": "J06",
+                    "procedures": ["89.02"],
+                    "drugs": ["KFA001"],
+                    "vitamins": ["Vitamin C 500 mg"],
+                    "total_procedure_cost": 100000,
+                    "total_drug_cost": 50000,
+                    "total_vitamin_cost": 20000,
+                    "total_claim_amount": 170000,
+                    "patient_frequency_risk": 2
+                }]
+            }
+            
+            try:
+                response = client.call_model(
+                    deployment_info.access_key,
+                    json.dumps(test_payload)
+                )
+                
+                result = json.loads(response)
+                if result.get("status") == "success":
+                    fraud_score = result['results'][0]['fraud_score']
+                    print(f"✓ Test prediction successful!")
+                    print(f"  Fraud score: {fraud_score:.4f}")
+                else:
+                    print(f"⚠ Test returned: {result}")
+            except Exception as e:
+                print(f"⚠ Could not test prediction: {e}")
         else:
-            print(f"⚠ Test returned: {result}")
+            print("⚠ No access key found in deployment info")
     
     except Exception as e:
-        print(f"⚠ Could not test deployment: {e}")
+        print(f"⚠ Could not verify deployment: {e}")
     
     # Success!
     print("\n" + "=" * 80)
