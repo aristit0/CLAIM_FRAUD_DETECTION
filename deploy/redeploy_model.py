@@ -8,7 +8,7 @@ Handles:
 - Rollback on failure
 
 Usage:
-  python deploy/redeploy_model.py --project-name "BPJS Fraud Detection"
+  python deploy/redeploy_model.py --project-name "model_fraud_detection_claim"
 """
 
 import cmlapi
@@ -413,7 +413,7 @@ class CMLModelDeployer:
 # ================================================================
 def main():
     """Main entry point"""
-    parser = argparse.ArgumentParser(description="Deploy BPJS Fraud Detection model to CML")
+    parser = argparse.ArgumentParser(description="Deploy model_fraud_detection_claim to CML")
     parser.add_argument(
         "--project-name",
         type=str,
@@ -423,7 +423,7 @@ def main():
     parser.add_argument(
         "--model-name",
         type=str,
-        default="BPJS Fraud Detection",
+        default="model_fraud_detection_claim",
         help="Model name to deploy"
     )
     
