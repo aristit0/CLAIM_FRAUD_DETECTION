@@ -22,7 +22,7 @@ from datetime import datetime
 # ================================================================
 
 MODEL_NAME = "model_fraud_detection_claim"
-MODEL_DESCRIPTION = "BPJS Fraud Detection Model - Auto-deployed"
+MODEL_DESCRIPTION = "Claim Fraud Detection Model - Auto-deployed"
 MODEL_FILE = "model.py"
 MODEL_FUNCTION = "predict"
 
