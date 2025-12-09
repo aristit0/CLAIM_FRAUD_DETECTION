@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Simple Model Redeployment Script for CML
-Auto-deploys trained model without manual UI interaction
+Model Redeployment Script for CML
+Works in both CML Jobs and Interactive Sessions
 
-Usage in CML Session:
-  !python deploy/redeploy_model.py
+Usage:
+  python deploy/redeploy_model.py  # As script/job
+  !python deploy/redeploy_model.py  # In notebook
 """
 
 import cmlapi
@@ -28,25 +29,33 @@ KERNEL = "python3"
 # HELPER FUNCTIONS
 # ================================================================
 
+def is_notebook():
+    """Check if running in Jupyter/IPython"""
+    try:
+        get_ipython()
+        return True
+    except NameError:
+        return False
+
 def get_runtime_identifier(client, project_id, model_id=None):
     """Get runtime identifier - try multiple methods"""
     
-    # Method 1: Get from existing successful build (BEST METHOD)
+    # Method 1: From existing build
     if model_id:
         try:
-            print("  Trying to get runtime from existing build...")
+            print("  Getting runtime from existing build...")
             builds = client.list_model_builds(project_id, model_id)
             
             for build in builds.model_builds:
                 if build.status == "built" and hasattr(build, 'runtime_identifier'):
-                    print(f"  ✓ Found runtime from build: {build.runtime_identifier}")
+                    print(f"  ✓ Using: {build.runtime_identifier[:60]}...")
                     return build.runtime_identifier
         except Exception as e:
             print(f"  Could not get from builds: {e}")
     
-    # Method 2: List all runtimes without filter
+    # Method 2: List all runtimes
     try:
-        print("  Listing all available runtimes...")
+        print("  Listing available runtimes...")
         runtimes = client.list_runtimes()
         
         if runtimes and hasattr(runtimes, 'runtimes') and runtimes.runtimes:
@@ -56,28 +65,28 @@ def get_runtime_identifier(client, project_id, model_id=None):
                 edition = runtime.edition.lower()
                 
                 if "python" in img and "3.10" in img and "standard" in edition:
-                    print(f"  ✓ Found runtime: {runtime.image_identifier}")
+                    print(f"  ✓ Found: {runtime.image_identifier[:60]}...")
                     return runtime.image_identifier
             
-            # Fallback: any Python 3 Standard
+            # Fallback
             for runtime in runtimes.runtimes:
                 img = runtime.image_identifier.lower()
                 edition = runtime.edition.lower()
                 
                 if "python" in img and "3" in img and "standard" in edition:
-                    print(f"  ✓ Using runtime: {runtime.image_identifier}")
+                    print(f"  ✓ Using: {runtime.image_identifier[:60]}...")
                     return runtime.image_identifier
             
-            # Last resort: first runtime
+            # Last resort
             runtime = runtimes.runtimes[0]
-            print(f"  ⚠ Using first available runtime: {runtime.image_identifier}")
+            print(f"  ⚠ Using first runtime: {runtime.image_identifier[:60]}...")
             return runtime.image_identifier
     
     except Exception as e:
         print(f"  Could not list runtimes: {e}")
     
-    # Method 3: Use common runtime identifier pattern
-    print("  ⚠ Using default runtime pattern...")
+    # Method 3: Default pattern
+    print("  ⚠ Using default runtime")
     return "docker.repository.cloudera.com/cloudera/cdsw/ml-runtime-workbench-python3.10-standard:2024.02.1-b4"
 
 # ================================================================
@@ -91,19 +100,19 @@ def deploy_model():
     print("CML MODEL AUTO-DEPLOYER")
     print("=" * 80)
     
-    # Initialize CML API client
+    # Initialize API client
     try:
         client = cmlapi.default_client()
         print("✓ Connected to CML API")
     except Exception as e:
-        print(f"✗ Failed to connect to CML API: {e}")
+        print(f"✗ Failed to connect: {e}")
         return False
     
-    # Get current project
+    # Get project
     try:
         project_id = os.getenv("CDSW_PROJECT_ID")
         if not project_id:
-            print("✗ CDSW_PROJECT_ID not found. Run this script inside a CML project.")
+            print("✗ CDSW_PROJECT_ID not found")
             return False
         
         project = client.get_project(project_id)
@@ -124,11 +133,11 @@ def deploy_model():
         for m in models.models:
             if m.name == MODEL_NAME:
                 model = m
-                print(f"✓ Found existing model: {model.id}")
+                print(f"✓ Found: {model.id}")
                 break
         
         if not model:
-            print(f"  Model not found. Creating new model...")
+            print("  Creating new model...")
             model_body = cmlapi.CreateModelRequest(
                 project_id=project.id,
                 name=MODEL_NAME,
@@ -136,29 +145,28 @@ def deploy_model():
                 disable_authentication=True
             )
             model = client.create_model(model_body, project.id)
-            print(f"✓ Model created: {model.id}")
+            print(f"✓ Created: {model.id}")
     
     except Exception as e:
-        print(f"✗ Error with model: {e}")
+        print(f"✗ Error: {e}")
         return False
     
-    # Step 2: Get runtime identifier
-    print(f"\n[2/6] Getting runtime information...")
+    # Step 2: Get runtime
+    print(f"\n[2/6] Getting runtime...")
     runtime_identifier = get_runtime_identifier(client, project.id, model.id)
     
     if not runtime_identifier:
-        print("✗ Could not determine runtime.")
+        print("✗ Could not determine runtime")
         return False
     
-    print(f"✓ Runtime: {runtime_identifier[:60]}...")
+    print(f"✓ Runtime configured")
     
     # Step 3: Build model
     print(f"\n[3/6] Building model from '{MODEL_FILE}'...")
     
     model_file_path = os.path.join("/home/cdsw", MODEL_FILE)
     if not os.path.exists(model_file_path):
-        print(f"✗ Model file not found: {model_file_path}")
-        print("  Make sure model.py exists in project root")
+        print(f"✗ File not found: {model_file_path}")
         return False
     
     print(f"✓ File found: {model_file_path}")
@@ -179,8 +187,8 @@ def deploy_model():
             model.id
         )
         
-        print(f"✓ Build started: {model_build.id}")
-        print(f"  Waiting for build (max 30 minutes)...")
+        print(f"✓ Build started: {model_build.id[:8]}...")
+        print("  Waiting for build (max 30 min)...")
         
         # Wait for build
         start_time = time.time()
@@ -190,7 +198,7 @@ def deploy_model():
                 return False
             
             elapsed = int(time.time() - start_time)
-            print(f"  Building... {elapsed}s elapsed", end="\r")
+            print(f"  Building... {elapsed}s", end="\r")
             time.sleep(10)
             
             model_build = client.get_model_build(
@@ -199,19 +207,17 @@ def deploy_model():
                 model_build.id
             )
         
-        print()
+        print()  # New line
         
         if model_build.status == "build failed":
-            print("✗ Build failed. Check CML UI for details.")
+            print("✗ Build failed - check CML UI")
             return False
         
         build_time = int(time.time() - start_time)
         print(f"✓ Build completed in {build_time}s")
     
     except Exception as e:
-        print(f"✗ Error building model: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"✗ Build error: {e}")
         return False
     
     # Step 4: Deploy model
@@ -231,8 +237,8 @@ def deploy_model():
             model_build.id
         )
         
-        print(f"✓ Deployment started: {model_deployment.id}")
-        print(f"  Waiting for deployment (max 30 minutes)...")
+        print(f"✓ Deployment started: {model_deployment.id[:8]}...")
+        print("  Waiting for deployment (max 30 min)...")
         
         start_time = time.time()
         while model_deployment.status not in ["stopped", "failed", "deployed"]:
@@ -241,7 +247,7 @@ def deploy_model():
                 return False
             
             elapsed = int(time.time() - start_time)
-            print(f"  Deploying... {elapsed}s elapsed", end="\r")
+            print(f"  Deploying... {elapsed}s", end="\r")
             time.sleep(10)
             
             model_deployment = client.get_model_deployment(
@@ -251,7 +257,7 @@ def deploy_model():
                 model_deployment.id
             )
         
-        print()
+        print()  # New line
         
         if model_deployment.status != "deployed":
             print(f"✗ Deployment failed: {model_deployment.status}")
@@ -261,9 +267,7 @@ def deploy_model():
         print(f"✓ Deployed in {deploy_time}s")
     
     except Exception as e:
-        print(f"✗ Error deploying: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"✗ Deployment error: {e}")
         return False
     
     # Step 5: Stop old deployments
@@ -292,7 +296,6 @@ def deploy_model():
                         deployment.id
                     )
                     stopped_count += 1
-                    print(f"  Stopped: {deployment.id[:8]}")
         
         if stopped_count > 0:
             print(f"✓ Stopped {stopped_count} old deployment(s)")
@@ -302,10 +305,11 @@ def deploy_model():
     except Exception as e:
         print(f"⚠ Warning: {e}")
     
-    # Step 6: Test deployment
-    print(f"\n[6/6] Testing deployment...")
+    # Step 6: Verify deployment
+    print(f"\n[6/6] Verifying deployment...")
     
     try:
+        # Refresh deployment info
         deployment_info = client.get_model_deployment(
             project.id,
             model.id,
@@ -315,9 +319,26 @@ def deploy_model():
         
         print(f"✓ Status: {deployment_info.status}")
         
-        if hasattr(deployment_info, 'access_key'):
-            print(f"✓ Access Key: {deployment_info.access_key}")
+        # Check for access key (may not be immediately available)
+        access_key = None
+        if hasattr(deployment_info, 'access_key') and deployment_info.access_key:
+            access_key = deployment_info.access_key
+        
+        # Alternative: get from model list
+        if not access_key:
+            try:
+                model_info = client.get_model(project.id, model.id)
+                if hasattr(model_info, 'latest_deployment_details'):
+                    details = model_info.latest_deployment_details
+                    if hasattr(details, 'access_key'):
+                        access_key = details.access_key
+            except:
+                pass
+        
+        if access_key:
+            print(f"✓ Access Key: {access_key}")
             
+            # Test prediction
             test_payload = {
                 "claims": [{
                     "claim_id": "TEST001",
@@ -339,34 +360,33 @@ def deploy_model():
             
             try:
                 response = client.call_model(
-                    deployment_info.access_key,
+                    access_key,
                     json.dumps(test_payload)
                 )
                 
                 result = json.loads(response)
                 if result.get("status") == "success":
-                    print(f"✓ Test prediction successful!")
+                    print("✓ Test prediction successful!")
                     print(f"  Fraud score: {result['results'][0]['fraud_score']:.4f}")
-                    print(f"  Fraud probability: {result['results'][0]['fraud_probability']}")
                 else:
-                    print(f"⚠ Unexpected response: {result}")
+                    print(f"⚠ Unexpected result: {result.get('status')}")
             except Exception as e:
                 print(f"⚠ Test failed: {e}")
         else:
-            print("⚠ No access key available")
+            print("⚠ Access key not available yet")
+            print("  Check CML UI for deployment details")
     
     except Exception as e:
-        print(f"⚠ Could not verify: {e}")
+        print(f"⚠ Verification warning: {e}")
     
-    # Success!
+    # Success summary
     print("\n" + "=" * 80)
     print("✅ DEPLOYMENT SUCCESSFUL")
     print("=" * 80)
-    print(f"Model Name:     {MODEL_NAME}")
-    print(f"Model ID:       {model.id}")
-    print(f"Build ID:       {model_build.id}")
-    print(f"Deployment ID:  {model_deployment.id}")
-    print(f"Status:         {model_deployment.status}")
+    print(f"Model:       {MODEL_NAME}")
+    print(f"Build:       {model_build.id}")
+    print(f"Deployment:  {model_deployment.id}")
+    print(f"Status:      {model_deployment.status}")
     print("=" * 80)
     
     return True
@@ -375,6 +395,32 @@ def deploy_model():
 # MAIN
 # ================================================================
 
+def main():
+    """Main entry point"""
+    try:
+        success = deploy_model()
+        
+        # Handle exit differently for notebook vs script
+        if is_notebook():
+            # In notebook, just return the result
+            if success:
+                print("\n✅ Script completed successfully")
+            else:
+                print("\n❌ Script failed")
+            return success
+        else:
+            # In script/job, use sys.exit
+            sys.exit(0 if success else 1)
+    
+    except Exception as e:
+        print(f"\n❌ FATAL ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        if is_notebook():
+            return False
+        else:
+            sys.exit(1)
+
 if __name__ == "__main__":
-    success = deploy_model()
-    sys.exit(0 if success else 1)
+    main()
